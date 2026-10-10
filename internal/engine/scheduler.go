@@ -63,6 +63,26 @@ func (sc *Scheduler) Stop() {
 	sc.mu.Unlock()
 }
 
+// MaxActiveTasks 获取当前最大并发数
+func (sc *Scheduler) MaxActiveTasks() int {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.maxActiveTasks
+}
+
+// SetMaxActiveTasks 动态调整全局最大下载任务并发数 (1~8)
+func (sc *Scheduler) SetMaxActiveTasks(n int) {
+	if n <= 0 {
+		n = 1
+	}
+	if n > 8 {
+		n = 8
+	}
+	sc.mu.Lock()
+	sc.maxActiveTasks = n
+	sc.mu.Unlock()
+}
+
 // OnUpdate 注册任务更新监听器
 func (sc *Scheduler) OnUpdate(listener TaskUpdateListener) {
 	sc.mu.Lock()

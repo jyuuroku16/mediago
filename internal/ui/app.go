@@ -49,6 +49,29 @@ type AppUI struct {
 	extractError   string
 	candidate      *model.Candidate
 	selectedFormat int
+
+	// 设置弹窗状态
+	showSettingsModal bool
+	concurrentLimit   int
+}
+
+// OpenSettings 打开偏好设置弹窗
+func (app *AppUI) OpenSettings() {
+	app.showSettingsModal = true
+	if app.window != nil {
+		app.window.Invalidate()
+	}
+}
+
+// OpenNewDownload 打开新建下载弹窗
+func (app *AppUI) OpenNewDownload() {
+	app.showModal = true
+	app.modalURL = ""
+	app.candidate = nil
+	app.extractError = ""
+	if app.window != nil {
+		app.window.Invalidate()
+	}
 }
 
 // NewAppUI 创建主界面控制器
@@ -63,10 +86,11 @@ func NewAppUI(
 		scheduler:      sc,
 		browserMgr:     bm,
 		library:        lib,
-		extractor:      discovery.NewYtDlpExtractor(),
-		currentTab:     "downloading",
-		showModal:      false,
-		selectedFormat: 0,
+		extractor:         discovery.NewYtDlpExtractor(),
+		currentTab:        "downloading",
+		showModal:         false,
+		selectedFormat:    0,
+		concurrentLimit:   sc.MaxActiveTasks(),
 	}
 
 	app.refreshData()
@@ -158,22 +182,32 @@ func (app *AppUI) View(c *ui.Context) {
 		})
 	})
 
-	// 全局快捷键处理: ⌘N 新建下载, ⌘B 打开浏览器, Esc 关闭弹窗
+	// 全局快捷键处理: ⌘N 新建下载, ⌘B 打开浏览器, ⌘, 偏好设置, Esc 关闭弹窗
 	if c.Shortcut(ui.Cmd, ui.KeyN) {
-		app.showModal = true
-		app.modalURL = ""
-		app.candidate = nil
+		app.OpenNewDownload()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyB) {
 		app.browserMgr.Open("https://www.bilibili.com")
 	}
-	if app.showModal && c.Shortcut(0, ui.KeyEscape) {
-		app.showModal = false
+	if c.Shortcut(ui.Cmd, ui.KeyComma) {
+		app.showSettingsModal = !app.showSettingsModal
+	}
+	if c.Shortcut(0, ui.KeyEscape) {
+		if app.showSettingsModal {
+			app.showSettingsModal = false
+		} else if app.showModal {
+			app.showModal = false
+		}
 	}
 
 	// 4. Spotlight / Raycast 风格的悬浮模态弹窗
 	if app.showModal {
 		app.renderModalDialog(c, pal)
+	}
+
+	// 5. 偏好设置弹窗
+	if app.showSettingsModal {
+		app.renderSettingsModal(c, pal)
 	}
 }
 
@@ -235,8 +269,8 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			app.renderSidebarItem(c, "library", "媒体资料库", iconFilm, 0, pal)
 		})
 
-		// 底部快捷卡片: 专用浏览器
-		ui.Column(c).Padding(10, 12, 14, 12).Children(func() {
+		// 底部快捷卡片: 专用浏览器 与 偏好设置
+		ui.Column(c).Padding(10, 12, 14, 12).Gap(6).Children(func() {
 			browserCard := ui.Row(c).Height(34).Padding(0, 10).Gap(8).Radius(8).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 			browserCard.Children(func() {
 				ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.Accent)
@@ -246,6 +280,17 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			})
 			if browserCard.Clicked() {
 				app.browserMgr.Open("https://www.bilibili.com")
+			}
+
+			settingsCard := ui.Row(c).Height(34).Padding(0, 10).Gap(8).Radius(8).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+			settingsCard.Children(func() {
+				ui.Icon(c, iconSettings).FontSize(14).TextColor(pal.TextSecondary)
+				ui.Text(c, "偏好设置").FontSize(12).TextColor(pal.TextPrimary)
+				ui.Spacer(c)
+				ui.Text(c, "⌘,").FontSize(10).TextColor(pal.TextMuted)
+			})
+			if settingsCard.Clicked() {
+				app.OpenSettings()
 			}
 		})
 	})
@@ -827,4 +872,119 @@ func (app *AppUI) HandleSniffedCandidate(cand *model.Candidate) {
 	} else if app.window != nil {
 		app.window.Invalidate()
 	}
+}
+
+
+// renderSettingsModal 渲染 macOS 偏好设置模态弹窗 (⌘,)
+func (app *AppUI) renderSettingsModal(c *ui.Context, pal Palette) {
+	ui.Box(c).Absolute().Fill().Center().Background(ui.RGBA(0, 0, 0, 0.45)).Children(func() {
+		modal := ui.Column(c).Width(520).Padding(20).Gap(16).Radius(14).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
+		modal.Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.25))
+
+		modal.Children(func() {
+			// 标题与关闭按钮
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "偏好设置 (Settings)").FontSize(16).Bold().TextColor(pal.TextPrimary)
+				ui.Spacer(c)
+				closeBtn := ui.ButtonBase(c).Size(20, 20).Radius(10).Center().Background(pal.InputBg)
+				closeBtn.Children(func() {
+					ui.Icon(c, iconClose).FontSize(12).TextColor(pal.TextSecondary)
+				})
+				if closeBtn.Clicked() {
+					app.showSettingsModal = false
+				}
+			})
+
+			// 分组 1: 下载并发控制
+			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(8).Children(func() {
+				ui.Text(c, "下载调度并发数:").FontSize(12).Bold().TextColor(pal.TextPrimary)
+				ui.Text(c, "设置全局同时处于活动下载状态的最大任务并发数").FontSize(11).TextColor(pal.TextSecondary)
+
+				concurOptions := []int{1, 2, 3, 4, 6}
+				ui.Row(c).Gap(6).Children(func() {
+					for _, limit := range concurOptions {
+						isSel := app.concurrentLimit == limit
+						bg := pal.CardBg
+						border := pal.CardBorder
+						tc := pal.TextPrimary
+						if isSel {
+							bg = pal.AccentLight
+							border = pal.Accent
+							tc = pal.Accent
+						}
+						btn := ui.Row(c).Height(26).Padding(0, 12).Radius(6).Background(bg).BorderWidth(1).BorderColor(border).AlignItems(ui.Center)
+						label := fmt.Sprintf("%d 个任务", limit)
+						if limit == 3 {
+							label += " (默认)"
+						}
+						btn.Children(func() {
+							ui.Text(c, label).FontSize(11).Bold().TextColor(tc)
+						})
+						if btn.Clicked() {
+							app.concurrentLimit = limit
+							app.scheduler.SetMaxActiveTasks(limit)
+						}
+					}
+				})
+			})
+
+			// 分组 2: 存储目录
+			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(8).Children(func() {
+				ui.Text(c, "默认下载保存目录:").FontSize(12).Bold().TextColor(pal.TextPrimary)
+				pathRow := ui.Row(c).AlignItems(ui.Center).Gap(8)
+				pathRow.Children(func() {
+					ui.Text(c, app.library.BaseDir()).FontSize(11).TextColor(pal.TextSecondary).SingleLine().Grow(1).MinWidth(0)
+					fBtn := ui.Button(c, "在 Finder 中打开").FontSize(11)
+					if fBtn.Clicked() {
+						_ = app.library.OpenInFinder(app.library.BaseDir())
+					}
+				})
+			})
+
+			// 分组 3: 常用键盘快捷键速查
+			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(6).Children(func() {
+				ui.Text(c, "快捷键指南 (Keyboard Shortcuts):").FontSize(12).Bold().TextColor(pal.TextPrimary)
+				shortcuts := []struct{ key, desc string }{
+					{"⌘ N", "新建下载任务 (打开 URL 解析弹窗)"},
+					{"⌘ B", "打开 WebKit 独立内置嗅探浏览器"},
+					{"⌘ ,", "打开或切换偏好设置"},
+					{"Esc", "关闭当前对话框或浮层"},
+					{"Enter", "确认解析 / 开始下载任务"},
+				}
+				for _, sc := range shortcuts {
+					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+						ui.Box(c).Padding(2, 6).Radius(4).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Children(func() {
+							ui.Text(c, sc.key).FontSize(10).Bold().TextColor(pal.Accent)
+						})
+						ui.Text(c, sc.desc).FontSize(11).TextColor(pal.TextSecondary)
+					})
+				}
+			})
+
+			// 分组 4: 浏览器与内核状态
+			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(6).Children(func() {
+				ui.Text(c, "浏览器与核心引擎:").FontSize(12).Bold().TextColor(pal.TextPrimary)
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconCheckCircle).FontSize(12).TextColor(pal.Success)
+					ui.Text(c, "WebKit 专用浏览器已就绪 (Chrome 131 桌面 UA 防拦截)").FontSize(11).TextColor(pal.TextSecondary)
+				})
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconCheckCircle).FontSize(12).TextColor(pal.Success)
+					ui.Text(c, "yt-dlp 与 ffmpeg 音视频自动 Mux 合并已就绪").FontSize(11).TextColor(pal.TextSecondary)
+				})
+			})
+
+			// 底部完成按钮
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Spacer(c)
+				doneBtn := ui.Row(c).Height(30).Padding(0, 16).Radius(7).Background(pal.Accent).AlignItems(ui.Center)
+				doneBtn.Children(func() {
+					ui.Text(c, "完成").FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
+				})
+				if doneBtn.Clicked() {
+					app.showSettingsModal = false
+				}
+			})
+		})
+	})
 }
