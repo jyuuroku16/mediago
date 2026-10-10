@@ -14,6 +14,12 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
+# 拷贝 macOS App 图标
+if [ -f "$PROJECT_DIR/assets/AppIcon.icns" ]; then
+    echo "-> 拷贝 AppIcon.icns 到 Resources..."
+    cp "$PROJECT_DIR/assets/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+fi
+
 # 2. 编译 Go 二进制
 echo "-> 编译 Go 可执行程序..."
 cd "$PROJECT_DIR"
@@ -29,6 +35,8 @@ cat << 'EOF' > "$BUNDLE_DIR/Contents/Info.plist"
 <dict>
     <key>CFBundleExecutable</key>
     <string>MediaGo</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.mediago.macos</string>
     <key>CFBundleName</key>
