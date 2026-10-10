@@ -46,17 +46,28 @@ type MediaFormat struct {
 	Note       string `json:"note"`     // 备注说明
 }
 
+// Episode 表示视频的一个分集（如 B 站分 P 或播放列表单集）
+type Episode struct {
+	Index    int    `json:"index"`    // 1, 2, ..., N
+	CID      int64  `json:"cid"`      // 平台内部 CID（若有）
+	Title    string `json:"title"`    // 分集标题，例如 "第五課"
+	Duration int64  `json:"duration"` // 时长（秒）
+	URL      string `json:"url"`      // 该分集独立 URL
+}
+
 // Candidate 表示媒体解析候选
 type Candidate struct {
-	ID        string        `json:"id"`
-	SourceURL string        `json:"source_url"`
-	Title     string        `json:"title"`
-	Author    string        `json:"author"`
-	CoverURL  string        `json:"cover_url"`
-	Duration  float64       `json:"duration"` // 秒
-	Formats   []MediaFormat `json:"formats"`
-	Selected  int           `json:"selected_format_index"`
-	CreatedAt time.Time     `json:"created_at"`
+	ID          string        `json:"id"`
+	SourceURL   string        `json:"source_url"`
+	Title       string        `json:"title"`
+	Author      string        `json:"author"`
+	CoverURL    string        `json:"cover_url"`
+	Duration    float64       `json:"duration"` // 秒
+	Formats     []MediaFormat `json:"formats"`
+	Selected    int           `json:"selected_format_index"`
+	Episodes    []Episode     `json:"episodes,omitempty"`     // 多分集列表
+	CurrentPage int           `json:"current_page,omitempty"` // 当前分集序号 (1-indexed)
+	CreatedAt   time.Time     `json:"created_at"`
 }
 
 // Chunk 表示 HTTP Range 分段信息

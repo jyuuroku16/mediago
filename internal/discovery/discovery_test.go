@@ -62,4 +62,12 @@ func TestBilibiliAggregate(t *testing.T) {
 	if len(cand.Formats) < 2 {
 		t.Fatalf("未能解析出音视频格式")
 	}
+
+	if len(cand.Episodes) != 41 {
+		t.Fatalf("分集数预期为 41，实际为 %d", len(cand.Episodes))
+	}
+	if cand.CurrentPage != 5 {
+		t.Fatalf("当前分集预期为 5，实际为 %d", cand.CurrentPage)
+	}
+	t.Logf("成功检测到多集视频: 共 %d 集, 当前 P%d: %s", len(cand.Episodes), cand.CurrentPage, cand.Episodes[4].Title)
 }

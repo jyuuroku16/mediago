@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -172,6 +174,19 @@ func (e *YtDlpExtractor) Extract(ctx context.Context, rawURL string) (*model.Can
 		Protocol:   "extractor",
 		Note:       "高保真音轨",
 	})
+
+	// 自动检测并挂载 Bilibili 多分集列表
+	if bvid := ExtractBVID(normURL); bvid != "" {
+		if episodes, _, _, err := FetchBilibiliPages(ctx, bvid); err == nil && len(episodes) > 0 {
+			candidate.Episodes = episodes
+			candidate.CurrentPage = ExtractPageNumber(normURL)
+			// 清理单集后缀 (例如 " p05 第五課")，恢复多集视频系列主标题
+			cleanSeriesTitle := regexp.MustCompile(`(?i)\s+p\d+\s+.*$`).ReplaceAllString(candidate.Title, "")
+			if cleanSeriesTitle != "" {
+				candidate.Title = strings.TrimSpace(cleanSeriesTitle)
+			}
+		}
+	}
 
 	return candidate, nil
 }
