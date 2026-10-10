@@ -73,6 +73,12 @@ func main() {
 
 		appUI.SetWindow(win)
 
+		if os.Getenv("SHOW_SETTINGS_DEFAULT") == "1" {
+			appUI.OpenSettings()
+		} else if os.Getenv("SHOW_MODAL_DEFAULT") == "1" {
+			appUI.OpenNewDownload()
+		}
+
 		win.OnClosed(func() {
 			scheduler.Stop()
 			os.Exit(0)
