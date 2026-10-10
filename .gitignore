@@ -1,0 +1,22 @@
+# Binaries and Apps
+MediaGo.app/
+mediago
+*.o
+*.a
+*.so
+
+# Data and Cache
+*.db
+*.db-wal
+*.db-shm
+*.partial
+*.ts
+*.mp4
+*.mkv
+test_tmp_*
+hls_tmp_*
+
+# OS artifacts
+.DS_Store
+.idea/
+.vscode/
