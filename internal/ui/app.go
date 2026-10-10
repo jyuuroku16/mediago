@@ -61,6 +61,9 @@ type AppUI struct {
 	// 独立偏好设置原生窗口管理器
 	settingsWin *SettingsWindow
 
+	// 侧边栏显隐状态 (参考 godiff)
+	sidebarShown bool
+
 	// 键盘快捷键速查面板状态
 	showShortcuts bool
 }
@@ -102,6 +105,25 @@ func (app *AppUI) OpenNewDownload() {
 	app.RefreshUI()
 }
 
+// ToggleSidebar 切换左侧侧边栏折叠/展开
+func (app *AppUI) ToggleSidebar() {
+	app.sidebarShown = !app.sidebarShown
+	app.RefreshUI()
+}
+
+// iconButton 统一标准带悬浮与按下动效的纯图标按钮 (参考 godiff)
+func (app *AppUI) iconButton(c *ui.Context, svg *ui.SVG, tip string) ui.Element {
+	t := c.Theme()
+	b := ui.ButtonBase(c).Size(28, 28).Radius(7).Center().Label(tip).Tooltip(tip).TextColor(t.TextMuted)
+	if b.Pressed() {
+		b.Background(ui.RGBA(127, 127, 127, 0.22))
+	} else if b.Hovered() {
+		b.Background(ui.RGBA(127, 127, 127, 0.13))
+	}
+	b.Children(func() { ui.Icon(c, svg).FontSize(15) })
+	return b
+}
+
 // NewAppUI 创建主界面控制器
 func NewAppUI(
 	st *storage.Storage,
@@ -119,6 +141,7 @@ func NewAppUI(
 		showModal:           false,
 		selectedFormat:      0,
 		downloadAllEpisodes: false,
+		sidebarShown:        true,
 		settingsWin:         NewSettingsWindow(),
 	}
 
@@ -199,10 +222,12 @@ func (app *AppUI) View(c *ui.Context) {
 	// 纵向彻底拉伸填满窗口，避免任何未渲染的纯黑底层暴露
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		// 1. 左侧 Sidebar (Apple 原生磨砂侧边栏)
-		app.renderSidebar(c, pal)
+		if app.sidebarShown {
+			app.renderSidebar(c, pal)
 
-		// 2. 细腻垂直分割线
-		ui.Box(c).Width(1).Shrink(0).Background(pal.HeaderBorder)
+			// 2. 细腻垂直分割线
+			ui.Box(c).Width(1).Shrink(0).Background(pal.HeaderBorder)
+		}
 
 		// 3. 右侧主体工作区 (Toolbar + 主内容流)
 		ui.Column(c).Grow(1).MinWidth(0).Background(pal.ContentBg).Children(func() {
@@ -211,7 +236,7 @@ func (app *AppUI) View(c *ui.Context) {
 		})
 	})
 
-	// 全局快捷键处理: ⌘N 新建下载, ⌘B 网址启动器, ⌘, 偏好设置, ⌘/ 快捷键速查
+	// 全局快捷键处理: ⌘N 新建下载, ⌘B 网址启动器, ⌘, 偏好设置, ⌘\ 切换侧边栏, ⌘/ 快捷键速查
 	if c.Shortcut(ui.Cmd, ui.KeyN) {
 		app.OpenNewDownload()
 	}
@@ -220,6 +245,10 @@ func (app *AppUI) View(c *ui.Context) {
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyComma) {
 		app.OpenSettings()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyBackslash) {
+		app.sidebarShown = !app.sidebarShown
+		app.RefreshUI()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeySlash) {
 		app.showShortcuts = !app.showShortcuts
@@ -244,13 +273,13 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 	left := max(bar.Left+10, 14)
 
 	ui.Column(c).Width(240).Shrink(0).Background(pal.SidebarBg).Children(func() {
-		// 顶部标题栏高度 52pt，与系统交通灯对齐
+		// 顶部标题栏高度 52pt，避让系统交通灯，右侧放置折叠侧边栏纯图标按钮 (参考 godiff)
 		ui.Row(c).Height(titleBarHeight).Padding(0, 12, 0, left).AlignItems(ui.Center).DragWindow().Children(func() {
-			ui.Text(c, "MediaGo").FontSize(13).Bold().TextColor(pal.TextPrimary)
-			ui.Box(c).Margin(0, 0, 0, 6).Padding(1, 5).Radius(4).Background(pal.AccentLight).Children(func() {
-				ui.Text(c, "v1.0").FontSize(10).Bold().TextColor(pal.Accent)
-			})
 			ui.Spacer(c)
+			if app.iconButton(c, iconSidebar, "隐藏侧边栏 (⌘\\)").Clicked() {
+				app.sidebarShown = false
+				app.RefreshUI()
+			}
 		})
 
 		// 搜索过滤胶囊框
@@ -295,25 +324,22 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			app.renderSidebarItem(c, "library", "媒体资料库", iconFilm, 0, pal)
 		})
 
-		// 底部纯图标工具条: 左右两端对齐，不占满整行，纯图标设计
-		ui.Row(c).Height(38).Padding(0, 16).AlignItems(ui.Center).Children(func() {
-			settingsBtn := ui.Box(c).Size(28, 28).Radius(6).Justify(ui.Center).AlignItems(ui.Center)
-			settingsBtn.Children(func() {
-				ui.Icon(c, iconSettings).FontSize(16).TextColor(pal.TextSecondary)
-			})
-			if settingsBtn.Clicked() {
+		// 底部纯图标工具条: 左侧设置纯图标，右侧为新建(+)与浏览器(🌐)并排纯图标
+		ui.Row(c).Height(38).Padding(0, 14).AlignItems(ui.Center).Children(func() {
+			if app.iconButton(c, iconSettings, "偏好设置 (⌘,)").Clicked() {
 				app.OpenSettings()
 			}
 
 			ui.Spacer(c)
 
-			browserBtn := ui.Box(c).Size(28, 28).Radius(6).Justify(ui.Center).AlignItems(ui.Center)
-			browserBtn.Children(func() {
-				ui.Icon(c, iconGlobe).FontSize(16).TextColor(pal.TextSecondary)
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				if app.iconButton(c, iconPlus, "新建下载 (⌘N)").Clicked() {
+					app.OpenNewDownload()
+				}
+				if app.iconButton(c, iconGlobe, "专用浏览器启动器 (⌘B)").Clicked() {
+					app.OpenBrowserLauncher()
+				}
 			})
-			if browserBtn.Clicked() {
-				app.OpenBrowserLauncher()
-			}
 		})
 	})
 }
@@ -356,7 +382,7 @@ func (app *AppUI) renderSidebarItem(c *ui.Context, id, title string, icon *ui.SV
 	}
 }
 
-// renderTopBar 渲染右侧顶部无缝融合的 Toolbar
+// renderTopBar 渲染右侧顶部无缝融合的 Toolbar (右上角洁净无冗余按钮)
 func (app *AppUI) renderTopBar(c *ui.Context, pal Palette) {
 	var totalSpeed int64
 	app.mu.RLock()
@@ -367,7 +393,21 @@ func (app *AppUI) renderTopBar(c *ui.Context, pal Palette) {
 	}
 	app.mu.RUnlock()
 
-	ui.Row(c).Height(titleBarHeight).Padding(0, 20).BorderWidth(0, 0, 1, 0).BorderColor(pal.HeaderBorder).Background(pal.HeaderBg).AlignItems(ui.Center).DragWindow().Children(func() {
+	leftPadding := float32(20)
+	if !app.sidebarShown {
+		bar := c.TitleBar()
+		leftPadding = max(bar.Left+10, 14)
+	}
+
+	ui.Row(c).Height(titleBarHeight).Padding(0, 20, 0, leftPadding).BorderWidth(0, 0, 1, 0).BorderColor(pal.HeaderBorder).Background(pal.HeaderBg).AlignItems(ui.Center).DragWindow().Children(func() {
+		if !app.sidebarShown {
+			if app.iconButton(c, iconSidebar, "显示侧边栏 (⌘\\)").Clicked() {
+				app.sidebarShown = true
+				app.RefreshUI()
+			}
+			ui.Box(c).Width(10)
+		}
+
 		viewTitle := "任务列表"
 		switch app.currentTab {
 		case "downloading":
@@ -393,35 +433,7 @@ func (app *AppUI) renderTopBar(c *ui.Context, pal Palette) {
 				ui.Icon(c, iconLightning).FontSize(11).TextColor(pal.Success)
 				ui.Text(c, formatSpeed(totalSpeed)).FontSize(11).Bold().TextColor(pal.Success)
 			})
-			ui.Box(c).Width(10)
 		}
-
-		// 操作按钮组
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			browBtn := ui.Row(c).Height(28).Padding(0, 10).Gap(6).Radius(6).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-			browBtn.Children(func() {
-				ui.Icon(c, iconGlobe).FontSize(12).TextColor(pal.TextPrimary)
-				ui.Text(c, "专用浏览器").FontSize(12).TextColor(pal.TextPrimary)
-			})
-			if browBtn.Clicked() {
-				app.OpenBrowserLauncher()
-			}
-
-			newBtn := ui.Row(c).Height(28).Padding(0, 12).Gap(6).Radius(6).Background(pal.Accent).AlignItems(ui.Center)
-			newBtn.Children(func() {
-				ui.Icon(c, iconPlus).FontSize(12).TextColor(ui.Hex("#ffffff"))
-				ui.Text(c, "新建下载").FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
-			})
-			if newBtn.Clicked() {
-				app.showModal = true
-				app.modalURL = ""
-				app.candidate = nil
-				app.extractError = ""
-				if app.window != nil {
-					app.window.Invalidate()
-				}
-			}
-		})
 	})
 }
 
@@ -439,7 +451,7 @@ func (app *AppUI) renderMainContent(c *ui.Context, pal Palette) {
 		ui.Column(c).Grow(1).Center().Gap(12).Children(func() {
 			ui.Icon(c, iconFilm).FontSize(48).TextColor(pal.TextMuted)
 			ui.Text(c, "暂无相关下载任务").FontSize(15).Bold().TextColor(pal.TextPrimary)
-			ui.Text(c, "点击右上角「新建下载」或通过专用浏览器嗅探网页视频").FontSize(13).TextColor(pal.TextSecondary)
+			ui.Text(c, "点击左下角「+」新建下载或通过专用浏览器嗅探网页视频").FontSize(13).TextColor(pal.TextSecondary)
 
 			createBtn := ui.Row(c).Height(32).Padding(0, 16).Gap(6).Radius(7).Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 			createBtn.Children(func() {
@@ -662,19 +674,16 @@ func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
 	})
 }
 
-// renderModalDialog 渲染 Spotlight / Raycast 风格的悬浮模态框 (基于 mygo ui.Modal)
+// renderModalDialog 渲染极简悬浮模态框 (基于 mygo ui.Modal 单层原生容器，无多余双层嵌套底座)
 func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 	ui.Modal(c, &app.showModal, func() {
-		modal := ui.Column(c).Width(540).Padding(20).Gap(14).Radius(14).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
-		modal.Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.25))
-
-		modal.Children(func() {
+		ui.Column(c).Width(520).Gap(14).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "新建媒体下载").FontSize(16).Bold().TextColor(pal.TextPrimary)
+				ui.Text(c, "新建媒体下载").FontSize(15).Bold().TextColor(pal.TextPrimary)
 				ui.Spacer(c)
 				closeBtn := ui.ButtonBase(c).Size(20, 20).Radius(10).Center().Background(pal.InputBg)
 				closeBtn.Children(func() {
-					ui.Icon(c, iconClose).FontSize(12).TextColor(pal.TextSecondary)
+					ui.Icon(c, iconClose).FontSize(11).TextColor(pal.TextSecondary)
 				})
 				if closeBtn.Clicked() {
 					app.showModal = false
@@ -779,7 +788,7 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 								startIdx := i
 								ui.Row(c).Gap(8).Children(func() {
 									for j, f := range rowSlice {
-										idx := startIdx + j
+                                        idx := startIdx + j
 										isSel := app.selectedFormat == idx
 										fBg := pal.CardBg
 										fBorder := pal.CardBorder
@@ -805,22 +814,17 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 				})
 			}
 
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				ui.Spacer(c)
-				cancelBtn := ui.Button(c, "取消").FontSize(12)
-				if cancelBtn.Clicked() {
-					app.showModal = false
-				}
-
-				if app.candidate != nil {
-					btnText := "立即开始下载"
-					if len(app.candidate.Episodes) > 1 {
-						if app.downloadAllEpisodes {
-							btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
-						} else {
-							btnText = fmt.Sprintf("立即下载当前集 (P%d)", app.candidate.CurrentPage)
-						}
+			// 底部操作区 (彻底移除多余的取消按钮，右对齐立即开始下载)
+			if app.candidate != nil {
+				btnText := "立即开始下载"
+				if len(app.candidate.Episodes) > 1 {
+					if app.downloadAllEpisodes {
+						btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
+					} else {
+						btnText = fmt.Sprintf("立即下载当前集 (P%d)", app.candidate.CurrentPage)
 					}
+				}
+				ui.Row(c).Justify(ui.End).Children(func() {
 					confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).Background(pal.Accent).AlignItems(ui.Center)
 					confirmBtn.Children(func() {
 						ui.Text(c, btnText).FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
@@ -829,8 +833,8 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 						app.submitCandidate()
 						app.showModal = false
 					}
-				}
-			})
+				})
+			}
 		})
 	})
 }
@@ -989,18 +993,16 @@ func (app *AppUI) HandleSniffedCandidate(cand *model.Candidate) {
 }
 
 
-// renderBrowserLauncherModal 渲染极简 Raycast 风格的网址输入与直达启动器
+// renderBrowserLauncherModal 渲染极简 Raycast 风格的网址输入与直达启动器 (单层原生模态设计，无双层底座)
 func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 	ui.Modal(c, &app.showBrowserLauncher, func() {
-		// 单一外框容器: 无多余嵌套边框
-		ui.Column(c).Width(520).Radius(12).Background(pal.CardBg).
-			BorderWidth(1).BorderColor(pal.CardBorder).Children(func() {
-
-			// 1. 一体化纯净搜索栏 (无内层嵌套边框与背景)
-			ui.Row(c).Height(48).Padding(0, 16).Gap(10).AlignItems(ui.Center).Children(func() {
-				ui.Icon(c, iconSearch).FontSize(17).TextColor(pal.TextSecondary)
-				in := ui.TextInput(c, &app.launcherInput).Placeholder("输入网址或搜索关键词...").
-					FontSize(14).Grow(1).TextColor(pal.TextPrimary)
+		ui.Column(c).Width(520).Gap(12).Children(func() {
+			// 1. 一体化纯净搜索栏
+			ui.Row(c).Height(40).Padding(0, 12).Gap(10).Radius(8).
+				Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconSearch).FontSize(16).TextColor(pal.TextSecondary)
+				in := ui.TextInputBase(c, &app.launcherInput).Placeholder("输入网址或搜索关键词 (回车直达)...").
+					FontSize(13).Grow(1).MinWidth(0)
 				in.Focus()
 				if in.Shortcut(0, ui.KeyEnter) {
 					app.launchBrowserFromInput()
@@ -1008,17 +1010,14 @@ func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 
 				// 极简回车徽标
 				enterBadge := ui.Row(c).Height(20).Padding(0, 6).Radius(4).
-					Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+					Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 				enterBadge.Children(func() {
 					ui.Text(c, "↵").FontSize(11).Bold().TextColor(pal.TextMuted)
 				})
 			})
 
-			// 细分割线
-			ui.Box(c).Height(1).Fill().Background(pal.CardBorder)
-
 			// 2. 常用平台快捷直达网格 (充满整行宽度，不留右侧空隙)
-			ui.Column(c).Padding(12, 14, 14, 14).Gap(8).Children(func() {
+			ui.Column(c).Gap(8).Children(func() {
 				ui.Text(c, "快捷直达").FontSize(11).Bold().TextColor(pal.TextMuted)
 
 				hubs := []struct {
@@ -1039,7 +1038,7 @@ func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 					for _, hub := range hubs[:3] {
 						h := hub
 						card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
-							Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+							Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 						card.Children(func() {
 							ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
 							ui.Text(c, h.name).FontSize(12).Bold().TextColor(pal.TextPrimary).Grow(1)
@@ -1057,7 +1056,7 @@ func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 					for _, hub := range hubs[3:] {
 						h := hub
 						card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
-							Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+							Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 						card.Children(func() {
 							ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
 							ui.Text(c, h.name).FontSize(12).Bold().TextColor(pal.TextPrimary).Grow(1)

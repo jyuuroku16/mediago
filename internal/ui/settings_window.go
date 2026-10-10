@@ -110,9 +110,9 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 		return
 	}
 
-	ui.Row(c).Fill().Background(pal.CardBg).Children(func() {
+	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(pal.CardBg).Children(func() {
 		// =====================================
-		// 1. 左侧纯中文分类导航栏 (宽 180px)
+		// 1. 左侧纯中文分类导航栏 (宽 180px, 顶格贴顶)
 		// =====================================
 		ui.Column(c).Width(180).Shrink(0).Padding(44, 12, 16, 12).Gap(4).Background(pal.SidebarBg).Children(func() {
 			navTabs := []struct {
@@ -130,17 +130,17 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 				t := tab
 				isSel := sw.activeTab == t.id
 
-				// 选中项使用参考图 5 的优雅高亮胶囊 (紫色/Accent)，白字白图标
+				// 选中项使用与主窗口一致的 pal.Accent
 				bg := ui.Transparent
 				textC := pal.TextSecondary
 				iconC := pal.TextSecondary
 				if isSel {
-					bg = ui.Hex("#9333ea") // 高级紫 (对标参考图)
+					bg = pal.Accent
 					textC = ui.Hex("#ffffff")
 					iconC = ui.Hex("#ffffff")
 				}
 
-				item := ui.Row(c).Height(34).Padding(0, 12).Gap(10).Radius(8).
+				item := ui.Row(c).Height(34).Width(156).Padding(0, 12).Gap(10).Radius(8).
 					Background(bg).AlignItems(ui.Center)
 
 				item.Children(func() {
@@ -153,15 +153,18 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 					sw.refresh()
 				}
 			}
+
+			ui.Spacer(c)
 		})
 
-		// 垂直中线分割线 (显式定高，避免在 ui.Row 中抢占水平空间)
-		ui.Box(c).Width(1).Height(480).Background(pal.CardBorder)
+		// 垂直中线分割线
+		ui.Box(c).Width(1).Shrink(0).Background(pal.CardBorder)
 
 		// =====================================
-		// 2. 右侧大方舒展的设置详情区 (宽 499)
+		// 2. 右侧大方舒展的设置详情区 (顶格贴顶，支持纵向滚动)
 		// =====================================
-		ui.Column(c).Width(499).Shrink(0).Padding(36, 28, 24, 28).Gap(20).Children(func() {
+		ui.Scroll(c).Vertical().Fill().Children(func() {
+			ui.Column(c).Padding(36, 28, 24, 28).Gap(16).Children(func() {
 			// 顶部大标题 (纯中文，无自绘关闭按钮，窗口左上角由 macOS 原生控制)
 			titleText := "通用"
 			switch sw.activeTab {
@@ -189,6 +192,7 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 			}
 		})
 	})
+})
 }
 
 // renderGeneralTab 渲染通用设置 (外观、通知、常规)
@@ -206,32 +210,24 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 					ui.Text(c, "跟随系统偏好或指定浅色、深色模式").FontSize(12).TextColor(pal.TextSecondary)
 				})
 
-				themes := []struct{ id, label string }{
-					{"system", "跟随系统"},
-					{"light", "浅色"},
-					{"dark", "深色"},
+				themeOpt := "跟随系统"
+				switch s.Theme {
+				case "light":
+					themeOpt = "浅色模式"
+				case "dark":
+					themeOpt = "深色模式"
 				}
-				ui.Row(c).Gap(4).Children(func() {
-					for _, th := range themes {
-						isSel := s.Theme == th.id
-						bg := pal.CardBg
-						textC := pal.TextSecondary
-						borderC := pal.CardBorder
-						if isSel {
-							bg = ui.Hex("#9333ea")
-							textC = ui.Hex("#ffffff")
-							borderC = ui.Hex("#9333ea")
-						}
-						btn := ui.Row(c).Height(28).Padding(0, 10).Radius(6).
-							Background(bg).BorderWidth(1).BorderColor(borderC).AlignItems(ui.Center)
-						btn.Children(func() {
-							ui.Text(c, th.label).FontSize(12).Bold().TextColor(textC)
-						})
-						if btn.Clicked() {
-							cfg.Update(func(st *config.Settings) { st.Theme = th.id })
-						}
+				themeSel := ui.Select(c, &themeOpt, []string{"跟随系统", "浅色模式", "深色模式"}).Width(130)
+				if themeSel.Changed() {
+					newT := "system"
+					switch themeOpt {
+					case "浅色模式":
+						newT = "light"
+					case "深色模式":
+						newT = "dark"
 					}
-				})
+					cfg.Update(func(st *config.Settings) { st.Theme = newT })
+				}
 			})
 		})
 
@@ -252,7 +248,7 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 
 					swBg := pal.CardBorder
 					if s.Notifications {
-						swBg = ui.Hex("#9333ea")
+						swBg = pal.Accent
 					}
 					swBtn := ui.Row(c).Size(40, 22).Radius(11).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
 					if s.Notifications {
@@ -278,7 +274,7 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 
 					swBg := pal.CardBorder
 					if s.AutoStart {
-						swBg = ui.Hex("#9333ea")
+						swBg = pal.Accent
 					}
 					swBtn := ui.Row(c).Size(40, 22).Radius(11).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
 					if s.AutoStart {
@@ -306,43 +302,28 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 			groupCard := ui.Column(c).Width(443).Radius(10).Background(pal.SidebarBg).
 				BorderWidth(1).BorderColor(pal.CardBorder)
 			groupCard.Children(func() {
-				// 行 1: 并发数
+				// 行 1: 并发数选择 Select
 				r1 := ui.Row(c).Width(443).Padding(12, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "最大并发下载任务数").FontSize(13).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, "同时进行下载的任务上限").FontSize(12).TextColor(pal.TextSecondary)
+						ui.Text(c, "同时进行下载的任务上限限制").FontSize(12).TextColor(pal.TextSecondary)
 					})
 
-					limits := []int{1, 2, 3, 4, 6}
-					ui.Row(c).Gap(4).Children(func() {
-						for _, limit := range limits {
-							isSel := s.MaxConcurrent == limit
-							bg := pal.CardBg
-							textC := pal.TextSecondary
-							borderC := pal.CardBorder
-							if isSel {
-								bg = ui.Hex("#9333ea")
-								textC = ui.Hex("#ffffff")
-								borderC = ui.Hex("#9333ea")
-							}
-							label := fmt.Sprintf("%d", limit)
-							btn := ui.Row(c).Height(28).Width(28).Radius(6).
-								Background(bg).BorderWidth(1).BorderColor(borderC).
-								Justify(ui.Center).AlignItems(ui.Center)
-							btn.Children(func() {
-								ui.Text(c, label).FontSize(12).Bold().TextColor(textC)
-							})
-							if btn.Clicked() {
-								cfg.Update(func(st *config.Settings) { st.MaxConcurrent = limit })
-							}
+					concurOpt := fmt.Sprintf("%d 个任务", s.MaxConcurrent)
+					concurSel := ui.Select(c, &concurOpt, []string{"1 个任务", "2 个任务", "3 个任务", "4 个任务", "6 个任务"}).Width(130)
+					if concurSel.Changed() {
+						var n int
+						fmt.Sscanf(concurOpt, "%d", &n)
+						if n > 0 {
+							cfg.Update(func(st *config.Settings) { st.MaxConcurrent = n })
 						}
-					})
+					}
 				})
 
 				ui.Box(c).Height(1).Fill().Background(pal.CardBorder)
 
-				// 行 2: 优先清晰度
+				// 行 2: 优先清晰度选择 Select
 				r2 := ui.Row(c).Width(443).Padding(12, 16).AlignItems(ui.Center)
 				r2.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
@@ -350,50 +331,24 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 						ui.Text(c, "解析多规格视频时默认优先选择的清晰度").FontSize(12).TextColor(pal.TextSecondary)
 					})
 
-					qualities := []struct{ id, label string }{
-						{"best", "最佳画质"},
-						{"1080p", "1080P"},
-						{"720p", "720P"},
+					qualOpt := "1080P 超清"
+					switch s.PreferredQuality {
+					case "best":
+						qualOpt = "最佳画质"
+					case "720p":
+						qualOpt = "720P 高清"
 					}
-					ui.Row(c).Gap(4).Children(func() {
-						for _, q := range qualities {
-							isSel := s.PreferredQuality == q.id
-							bg := pal.CardBg
-							textC := pal.TextSecondary
-							borderC := pal.CardBorder
-							if isSel {
-								bg = ui.Hex("#9333ea")
-								textC = ui.Hex("#ffffff")
-								borderC = ui.Hex("#9333ea")
-							}
-							btn := ui.Row(c).Height(28).Padding(0, 10).Radius(6).
-								Background(bg).BorderWidth(1).BorderColor(borderC).AlignItems(ui.Center)
-							btn.Children(func() {
-								ui.Text(c, q.label).FontSize(12).Bold().TextColor(textC)
-							})
-							if btn.Clicked() {
-								cfg.Update(func(st *config.Settings) { st.PreferredQuality = q.id })
-							}
+					qualSel := ui.Select(c, &qualOpt, []string{"最佳画质", "1080P 超清", "720P 高清"}).Width(130)
+					if qualSel.Changed() {
+						newQ := "1080p"
+						switch qualOpt {
+						case "最佳画质":
+							newQ = "best"
+						case "720P 高清":
+							newQ = "720p"
 						}
-					})
-				})
-			})
-		})
-
-		// 引擎组件状态
-		ui.Column(c).Gap(8).Children(func() {
-			ui.Text(c, "核心引擎").FontSize(13).Bold().TextColor(pal.TextMuted)
-
-			statusCard := ui.Column(c).Width(443).Padding(12, 16).Gap(8).Radius(10).
-				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder)
-			statusCard.Children(func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconCheckCircle).FontSize(14).TextColor(pal.Success)
-					ui.Text(c, "yt-dlp 多站点流媒体解析引擎: 已就绪").FontSize(12).TextColor(pal.TextPrimary)
-				})
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconCheckCircle).FontSize(14).TextColor(pal.Success)
-					ui.Text(c, "ffmpeg DASH 音视频自动封装合成管道: 已就绪").FontSize(12).TextColor(pal.TextPrimary)
+						cfg.Update(func(st *config.Settings) { st.PreferredQuality = newQ })
+					}
 				})
 			})
 		})

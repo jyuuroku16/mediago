@@ -144,6 +144,15 @@ func buildAppMenu(appUI *ui.AppUI, browserMgr *browser.Manager) *mygo.Menu {
 				},
 				mygo.Separator(),
 				{
+					Label:       "切换侧边栏",
+					Accelerator: "CmdOrCtrl+\\",
+					Click: func(_ *mygo.MenuItem, win *mygo.Window) {
+						if appUI != nil {
+							appUI.ToggleSidebar()
+						}
+					},
+				},
+				{
 					Label:       "重新加载",
 					Accelerator: "CmdOrCtrl+R",
 					Click: func(_ *mygo.MenuItem, win *mygo.Window) {
