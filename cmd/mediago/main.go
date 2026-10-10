@@ -9,6 +9,7 @@ import (
 	mygoui "github.com/egoist/mygo/ui"
 
 	"mediago/internal/browser"
+	"mediago/internal/config"
 	"mediago/internal/engine"
 	"mediago/internal/library"
 	"mediago/internal/model"
@@ -33,18 +34,23 @@ func main() {
 	}
 	defer store.Close()
 
-	// 2. 初始化本地媒体库
-	lib, err := library.NewLibrary()
+	// 2. 加载全局配置并应用主题
+	cfg := config.Global()
+	s := cfg.Get()
+	config.ApplyTheme(s.Theme)
+
+	// 3. 初始化本地媒体库
+	lib, err := library.NewLibrary(s.DownloadDir)
 	if err != nil {
 		log.Fatalf("初始化媒体库失败: %v", err)
 	}
 
-	// 3. 初始化并发下载调度器
-	scheduler := engine.NewScheduler(store, 3)
+	// 4. 初始化并发下载调度器
+	scheduler := engine.NewScheduler(store, s.MaxConcurrent)
 	scheduler.Start()
 	defer scheduler.Stop()
 
-	// 4. 初始化控制器与浏览器管理器
+	// 5. 初始化控制器与浏览器管理器
 	var appUI *ui.AppUI
 	browserMgr := browser.NewManager(func(c *model.Candidate) {
 		if appUI != nil {
@@ -53,6 +59,17 @@ func main() {
 	})
 
 	appUI = ui.NewAppUI(store, scheduler, browserMgr, lib)
+
+	// 注册配置监听器
+	cfg.OnChange(func(latest config.Settings) {
+		scheduler.SetMaxActiveTasks(latest.MaxConcurrent)
+		_ = lib.SetBaseDir(latest.DownloadDir)
+		config.ApplyTheme(latest.Theme)
+		syncAppMenu(latest)
+		if appUI != nil {
+			appUI.RefreshUI()
+		}
+	})
 
 	mygo.App.WhenReady(func() {
 		// 注册 macOS 原生系统顶部菜单栏 (包含 Settings ⌘,)

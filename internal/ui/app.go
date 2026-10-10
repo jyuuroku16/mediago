@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"mediago/internal/browser"
+	"mediago/internal/config"
 	"mediago/internal/discovery"
 	"mediago/internal/engine"
 	"mediago/internal/library"
@@ -53,17 +55,28 @@ type AppUI struct {
 	// 分集下载控制 (B站多P等)
 	downloadAllEpisodes bool
 
-	// 设置弹窗状态
-	showSettingsModal bool
-	concurrentLimit   int
+	// 对话框与速查面板状态 (遵循 mygo ui.Modal 规范)
+	showSettings  bool
+	showShortcuts bool
 }
 
-// OpenSettings 打开偏好设置弹窗
-func (app *AppUI) OpenSettings() {
-	app.showSettingsModal = true
+// RefreshUI 触发主窗口重绘
+func (app *AppUI) RefreshUI() {
 	if app.window != nil {
 		app.window.Invalidate()
 	}
+}
+
+// OpenSettings 打开偏好设置面板
+func (app *AppUI) OpenSettings() {
+	app.showSettings = true
+	app.RefreshUI()
+}
+
+// OpenShortcutsHelp 打开快捷键速查面板
+func (app *AppUI) OpenShortcutsHelp() {
+	app.showShortcuts = true
+	app.RefreshUI()
 }
 
 // OpenNewDownload 打开新建下载弹窗
@@ -73,9 +86,7 @@ func (app *AppUI) OpenNewDownload() {
 	app.candidate = nil
 	app.extractError = ""
 	app.downloadAllEpisodes = false
-	if app.window != nil {
-		app.window.Invalidate()
-	}
+	app.RefreshUI()
 }
 
 // NewAppUI 创建主界面控制器
@@ -86,15 +97,15 @@ func NewAppUI(
 	lib *library.Library,
 ) *AppUI {
 	app := &AppUI{
-		storage:        st,
-		scheduler:      sc,
-		browserMgr:     bm,
-		library:        lib,
-		extractor:         discovery.NewYtDlpExtractor(),
-		currentTab:        "downloading",
-		showModal:         false,
-		selectedFormat:    0,
-		concurrentLimit:   sc.MaxActiveTasks(),
+		storage:             st,
+		scheduler:           sc,
+		browserMgr:          bm,
+		library:             lib,
+		extractor:           discovery.NewYtDlpExtractor(),
+		currentTab:          "downloading",
+		showModal:           false,
+		selectedFormat:      0,
+		downloadAllEpisodes: false,
 	}
 
 	app.refreshData()
@@ -186,7 +197,7 @@ func (app *AppUI) View(c *ui.Context) {
 		})
 	})
 
-	// 全局快捷键处理: ⌘N 新建下载, ⌘B 打开浏览器, ⌘, 偏好设置, Esc 关闭弹窗
+	// 全局快捷键处理: ⌘N 新建下载, ⌘B 嗅探浏览器, ⌘, 偏好设置, ⌘/ 快捷键速查
 	if c.Shortcut(ui.Cmd, ui.KeyN) {
 		app.OpenNewDownload()
 	}
@@ -194,24 +205,21 @@ func (app *AppUI) View(c *ui.Context) {
 		app.browserMgr.Open("https://www.bilibili.com")
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyComma) {
-		app.showSettingsModal = !app.showSettingsModal
+		app.showSettings = !app.showSettings
 	}
-	if c.Shortcut(0, ui.KeyEscape) {
-		if app.showSettingsModal {
-			app.showSettingsModal = false
-		} else if app.showModal {
-			app.showModal = false
-		}
+	if c.Shortcut(ui.Cmd, ui.KeySlash) {
+		app.showShortcuts = !app.showShortcuts
 	}
 
-	// 4. Spotlight / Raycast 风格的悬浮模态弹窗
+	// 模态弹窗渲染 (基于 mygo ui.Modal 原生规范)
 	if app.showModal {
 		app.renderModalDialog(c, pal)
 	}
-
-	// 5. 偏好设置弹窗
-	if app.showSettingsModal {
+	if app.showSettings {
 		app.renderSettingsModal(c, pal)
+	}
+	if app.showShortcuts {
+		app.renderShortcutsModal(c, pal)
 	}
 }
 
@@ -644,9 +652,9 @@ func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
 	})
 }
 
-// renderModalDialog 渲染 Spotlight / Raycast 风格的悬浮模态框
+// renderModalDialog 渲染 Spotlight / Raycast 风格的悬浮模态框 (基于 mygo ui.Modal)
 func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
-	ui.Box(c).Absolute().Fill().Center().Background(ui.RGBA(0, 0, 0, 0.45)).Children(func() {
+	ui.Modal(c, &app.showModal, func() {
 		modal := ui.Column(c).Width(540).Padding(20).Gap(14).Radius(14).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
 		modal.Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.25))
 
@@ -971,114 +979,174 @@ func (app *AppUI) HandleSniffedCandidate(cand *model.Candidate) {
 }
 
 
-// renderSettingsModal 渲染 macOS 偏好设置模态弹窗 (⌘,)
+// renderSettingsModal 渲染遵循 egoist/godiff 规范的偏好设置模态面板 (ui.Modal + ui.Field)
 func (app *AppUI) renderSettingsModal(c *ui.Context, pal Palette) {
-	ui.Box(c).Absolute().Fill().Center().Background(ui.RGBA(0, 0, 0, 0.45)).Children(func() {
-		modal := ui.Column(c).Width(520).Padding(20).Gap(16).Radius(14).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
-		modal.Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.25))
+	cfg := config.Global()
+	s := cfg.Get()
 
-		modal.Children(func() {
-			// 标题与关闭按钮
+	ui.Modal(c, &app.showSettings, func() {
+		ui.Column(c).Width(520).Gap(16).Children(func() {
+			// 顶部标题与关闭按钮
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "偏好设置 (Settings)").FontSize(16).Bold().TextColor(pal.TextPrimary)
-				ui.Spacer(c)
-				closeBtn := ui.ButtonBase(c).Size(20, 20).Radius(10).Center().Background(pal.InputBg)
-				closeBtn.Children(func() {
-					ui.Icon(c, iconClose).FontSize(12).TextColor(pal.TextSecondary)
-				})
-				if closeBtn.Clicked() {
-					app.showSettingsModal = false
+				ui.Text(c, "偏好设置 (Settings)").FontSize(15).Bold().Grow(1).TextColor(pal.TextPrimary)
+				if ui.Button(c, "完成").Clicked() {
+					app.showSettings = false
 				}
 			})
 
-			// 分组 1: 下载并发控制
-			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(8).Children(func() {
-				ui.Text(c, "下载调度并发数:").FontSize(12).Bold().TextColor(pal.TextPrimary)
-				ui.Text(c, "设置全局同时处于活动下载状态的最大任务并发数").FontSize(11).TextColor(pal.TextSecondary)
-
-				concurOptions := []int{1, 2, 3, 4, 6}
-				ui.Row(c).Gap(6).Children(func() {
-					for _, limit := range concurOptions {
-						isSel := app.concurrentLimit == limit
-						bg := pal.CardBg
-						border := pal.CardBorder
-						tc := pal.TextPrimary
+			// 字段 1: 外观主题 (跟随系统 / 浅色 / 深色)
+			ui.Field(c, "外观主题 (Theme)", func() {
+				themes := []struct{ id, label string }{
+					{"system", "跟随系统"},
+					{"light", "浅色 (Light)"},
+					{"dark", "深色 (Dark)"},
+				}
+				ui.Row(c).Gap(8).Children(func() {
+					for _, th := range themes {
+						isSel := s.Theme == th.id
+						btn := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center)
 						if isSel {
-							bg = pal.AccentLight
-							border = pal.Accent
-							tc = pal.Accent
+							btn.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
+							btn.Children(func() {
+								ui.Text(c, th.label).FontSize(11).Bold().TextColor(pal.Accent)
+							})
+						} else {
+							btn.Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
+							btn.Children(func() {
+								ui.Text(c, th.label).FontSize(11).TextColor(pal.TextSecondary)
+							})
 						}
-						btn := ui.Row(c).Height(26).Padding(0, 12).Radius(6).Background(bg).BorderWidth(1).BorderColor(border).AlignItems(ui.Center)
+						if btn.Clicked() {
+							cfg.Update(func(st *config.Settings) { st.Theme = th.id })
+						}
+					}
+				})
+			}).Description("选择 MediaGo 界面所呈现的明暗色彩外观")
+
+			// 字段 2: 下载并发数
+			ui.Field(c, "下载并发数 (Max Concurrent Tasks)", func() {
+				limits := []int{1, 2, 3, 4, 6}
+				ui.Row(c).Gap(6).Children(func() {
+					for _, limit := range limits {
+						isSel := s.MaxConcurrent == limit
+						btn := ui.Row(c).Height(28).Padding(0, 10).Radius(6).AlignItems(ui.Center)
 						label := fmt.Sprintf("%d 个任务", limit)
 						if limit == 3 {
 							label += " (默认)"
 						}
-						btn.Children(func() {
-							ui.Text(c, label).FontSize(11).Bold().TextColor(tc)
-						})
+						if isSel {
+							btn.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
+							btn.Children(func() {
+								ui.Text(c, label).FontSize(11).Bold().TextColor(pal.Accent)
+							})
+						} else {
+							btn.Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
+							btn.Children(func() {
+								ui.Text(c, label).FontSize(11).TextColor(pal.TextSecondary)
+							})
+						}
 						if btn.Clicked() {
-							app.concurrentLimit = limit
-							app.scheduler.SetMaxActiveTasks(limit)
+							cfg.Update(func(st *config.Settings) { st.MaxConcurrent = limit })
 						}
 					}
 				})
-			})
+			}).Description("设置全局同时处于活动下载状态的最大任务并发限制")
 
-			// 分组 2: 存储目录
-			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(8).Children(func() {
-				ui.Text(c, "默认下载保存目录:").FontSize(12).Bold().TextColor(pal.TextPrimary)
-				pathRow := ui.Row(c).AlignItems(ui.Center).Gap(8)
-				pathRow.Children(func() {
-					ui.Text(c, app.library.BaseDir()).FontSize(11).TextColor(pal.TextSecondary).SingleLine().Grow(1).MinWidth(0)
-					fBtn := ui.Button(c, "在 Finder 中打开").FontSize(11)
-					if fBtn.Clicked() {
-						_ = app.library.OpenInFinder(app.library.BaseDir())
+			// 字段 3: 默认下载保存目录
+			ui.Field(c, "默认下载保存目录 (Download Directory)", func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Text(c, s.DownloadDir).FontSize(11).TextColor(pal.TextSecondary).SingleLine().Grow(1).MinWidth(0)
+					changeBtn := ui.Button(c, "更改…").FontSize(11)
+					if changeBtn.Clicked() {
+						go func() {
+							paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+								Title:       "选择媒体下载保存目录",
+								Directory:   true,
+								DefaultPath: s.DownloadDir,
+							})
+							if err == nil && len(paths) > 0 {
+								cfg.Update(func(st *config.Settings) {
+									st.DownloadDir = paths[0]
+								})
+							}
+						}()
 					}
+					finderBtn := ui.Button(c, "Finder 中打开").FontSize(11)
+					if finderBtn.Clicked() {
+						_ = exec.Command("open", s.DownloadDir).Start()
+					}
+				})
+			}).Description("媒体资源下载合并完成后的默认保存根路径")
+
+			// 字段 4: 引擎环境与状态
+			ui.Field(c, "核心引擎与浏览器状态", func() {
+				ui.Column(c).Gap(4).Children(func() {
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, iconCheckCircle).FontSize(12).TextColor(pal.Success)
+						ui.Text(c, "WebKit 独立嗅探窗口就绪 (Chrome 131 桌面 UA 防拦截)").FontSize(11).TextColor(pal.TextSecondary)
+					})
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, iconCheckCircle).FontSize(12).TextColor(pal.Success)
+						ui.Text(c, "yt-dlp 与 ffmpeg 音视频自动 Mux 合并引擎已就绪").FontSize(11).TextColor(pal.TextSecondary)
+					})
 				})
 			})
 
-			// 分组 3: 常用键盘快捷键速查
-			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(6).Children(func() {
-				ui.Text(c, "快捷键指南 (Keyboard Shortcuts):").FontSize(12).Bold().TextColor(pal.TextPrimary)
-				shortcuts := []struct{ key, desc string }{
-					{"⌘ N", "新建下载任务 (打开 URL 解析弹窗)"},
-					{"⌘ B", "打开 WebKit 独立内置嗅探浏览器"},
-					{"⌘ ,", "打开或切换偏好设置"},
-					{"Esc", "关闭当前对话框或浮层"},
-					{"Enter", "确认解析 / 开始下载任务"},
+			// 底部操作区
+			ui.Row(c).Justify(ui.End).Children(func() {
+				if ui.PrimaryButton(c, "完成").Clicked() {
+					app.showSettings = false
 				}
-				for _, sc := range shortcuts {
-					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-						ui.Box(c).Padding(2, 6).Radius(4).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Children(func() {
-							ui.Text(c, sc.key).FontSize(10).Bold().TextColor(pal.Accent)
-						})
-						ui.Text(c, sc.desc).FontSize(11).TextColor(pal.TextSecondary)
+			})
+		})
+	})
+}
+
+// renderShortcutsModal 渲染键盘快捷键速查面板 (对标 godiff/palette.go shortcutsHelp)
+func (app *AppUI) renderShortcutsModal(c *ui.Context, pal Palette) {
+	groups := []struct {
+		title string
+		keys  [][2]string
+	}{
+		{"任务与嗅探", [][2]string{
+			{"新建下载任务", "⌘N"},
+			{"打开专用浏览器", "⌘B"},
+			{"确认解析 / 开始下载", "↩"},
+		}},
+		{"系统与偏好", [][2]string{
+			{"偏好设置", "⌘,"},
+			{"快捷键速查", "⌘/"},
+			{"关闭浮层或弹窗", "Esc"},
+			{"重新加载界面", "⌘R"},
+		}},
+	}
+
+	ui.Modal(c, &app.showShortcuts, func() {
+		ui.Column(c).Width(520).Gap(16).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "键盘快捷键速查 (Keyboard Shortcuts)").FontSize(15).Bold().Grow(1).TextColor(pal.TextPrimary)
+				if ui.Button(c, "完成").Clicked() {
+					app.showShortcuts = false
+				}
+			})
+
+			ui.Grid(c).Columns(2).GapX(24).GapY(12).Children(func() {
+				for _, g := range groups {
+					ui.Column(c).Gap(4).Children(func() {
+						ui.Text(c, strings.ToUpper(g.title)).FontSize(11).Bold().TextColor(pal.TextMuted)
+						for _, k := range g.keys {
+							ui.Row(c).MinHeight(26).AlignItems(ui.Center).Children(func() {
+								ui.Text(c, k[0]).FontSize(12).Grow(1).TextColor(pal.TextSecondary)
+								ui.Text(c, k[1]).FontSize(11).Bold().Padding(2, 6).Radius(5).Background(pal.CardBorder).TextColor(pal.TextPrimary)
+							})
+						}
 					})
 				}
 			})
 
-			// 分组 4: 浏览器与内核状态
-			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(6).Children(func() {
-				ui.Text(c, "浏览器与核心引擎:").FontSize(12).Bold().TextColor(pal.TextPrimary)
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconCheckCircle).FontSize(12).TextColor(pal.Success)
-					ui.Text(c, "WebKit 专用浏览器已就绪 (Chrome 131 桌面 UA 防拦截)").FontSize(11).TextColor(pal.TextSecondary)
-				})
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconCheckCircle).FontSize(12).TextColor(pal.Success)
-					ui.Text(c, "yt-dlp 与 ffmpeg 音视频自动 Mux 合并已就绪").FontSize(11).TextColor(pal.TextSecondary)
-				})
-			})
-
-			// 底部完成按钮
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Spacer(c)
-				doneBtn := ui.Row(c).Height(30).Padding(0, 16).Radius(7).Background(pal.Accent).AlignItems(ui.Center)
-				doneBtn.Children(func() {
-					ui.Text(c, "完成").FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
-				})
-				if doneBtn.Clicked() {
-					app.showSettingsModal = false
+			ui.Row(c).Justify(ui.End).Children(func() {
+				if ui.PrimaryButton(c, "关闭").Clicked() {
+					app.showShortcuts = false
 				}
 			})
 		})
