@@ -126,42 +126,52 @@ func (e *YtDlpExtractor) Extract(ctx context.Context, rawURL string) (*model.Can
 		CreatedAt: time.Now(),
 	}
 
+	// 智能分析清晰度梯次并聚合音视频合成流
+	heightMap := make(map[int]bool)
 	for _, f := range data.Formats {
-		// 过滤掉纯音频或无效格式
-		if f.URL == "" {
-			continue
+		if f.Height > 0 {
+			heightMap[f.Height] = true
 		}
-		res := f.Resolution
-		if res == "" && f.Height > 0 {
-			res = fmt.Sprintf("%dp", f.Height)
-		}
-		if res == "" {
-			res = "Default"
-		}
+	}
 
+	gradients := []int{2160, 1440, 1080, 720, 480, 360}
+	for _, h := range gradients {
+		if heightMap[h] {
+			label := fmt.Sprintf("%dP", h)
+			if h >= 1080 {
+				label += " 超清"
+			} else if h >= 720 {
+				label += " 高清"
+			}
+			candidate.Formats = append(candidate.Formats, model.MediaFormat{
+				FormatID:   fmt.Sprintf("bv*[height<=%d]+ba/b", h),
+				Resolution: label,
+				Ext:        "mp4",
+				Protocol:   "extractor",
+				Note:       "最佳画音自动合并",
+			})
+		}
+	}
+
+	// 若未匹配到标准梯度，采用通用最佳画质
+	if len(candidate.Formats) == 0 {
 		candidate.Formats = append(candidate.Formats, model.MediaFormat{
-			FormatID:   f.FormatID,
-			Resolution: res,
-			Ext:        f.Ext,
-			VCodec:     f.VCodec,
-			ACodec:     f.ACodec,
-			Filesize:   f.Filesize,
-			URL:        f.URL,
-			Protocol:   f.Protocol,
-			Note:       f.FormatNote,
+			FormatID:   "bv*+ba/b",
+			Resolution: "最佳画质 (推荐)",
+			Ext:        "mp4",
+			Protocol:   "extractor",
+			Note:       "自动合并音视频",
 		})
 	}
 
-	// 如果 formats 为空，但有单顶层 URL
-	if len(candidate.Formats) == 0 && data.URL != "" {
-		candidate.Formats = append(candidate.Formats, model.MediaFormat{
-			FormatID:   "default",
-			Resolution: "Default",
-			Ext:        data.Ext,
-			URL:        data.URL,
-			Protocol:   "http",
-		})
-	}
+	// 补充一个提取纯音频选项
+	candidate.Formats = append(candidate.Formats, model.MediaFormat{
+		FormatID:   "ba/b",
+		Resolution: "提取音频",
+		Ext:        "m4a",
+		Protocol:   "extractor",
+		Note:       "高保真音轨",
+	})
 
 	return candidate, nil
 }

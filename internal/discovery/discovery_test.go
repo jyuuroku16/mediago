@@ -43,3 +43,23 @@ func TestDirectMediaExtract(t *testing.T) {
 		t.Fatalf("提取出的候选媒体规格不正确: %+v", cand)
 	}
 }
+
+
+func TestBilibiliAggregate(t *testing.T) {
+	ext := NewYtDlpExtractor()
+	cand, err := ext.Extract(context.Background(), "https://www.bilibili.com/video/BV1xA411b7ri/?p=5")
+	if err != nil {
+		t.Logf("网络异常或超时: %v", err)
+		return
+	}
+	t.Logf("聚合后清晰度数量: %d", len(cand.Formats))
+	for _, f := range cand.Formats {
+		t.Logf("  规格: %s (%s) -> selector: %s", f.Resolution, f.Ext, f.FormatID)
+	}
+	if len(cand.Formats) > 6 {
+		t.Fatalf("聚合未生效，格式依然过多: %d", len(cand.Formats))
+	}
+	if len(cand.Formats) < 2 {
+		t.Fatalf("未能解析出音视频格式")
+	}
+}
