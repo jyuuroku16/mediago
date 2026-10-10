@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"mediago/internal/browser"
-	"mediago/internal/config"
 	"mediago/internal/discovery"
 	"mediago/internal/engine"
 	"mediago/internal/library"
@@ -60,10 +58,8 @@ type AppUI struct {
 	showBrowserLauncher bool
 	launcherInput       string
 
-	// 分栏偏好设置状态 (对标 Raycast Settings)
-	showSettings   bool
-	settingsTab    string // "general", "downloader", "browser", "storage", "about"
-	settingsSearch string
+	// 独立偏好设置原生窗口管理器
+	settingsWin *SettingsWindow
 
 	// 键盘快捷键速查面板状态
 	showShortcuts bool
@@ -76,13 +72,11 @@ func (app *AppUI) RefreshUI() {
 	}
 }
 
-// OpenSettings 打开偏好设置面板
-func (app *AppUI) OpenSettings() {
-	app.showSettings = true
-	if app.settingsTab == "" {
-		app.settingsTab = "general"
+// OpenSettings 打开独立的 macOS 原生偏好设置窗口
+func (app *AppUI) OpenSettings(initialTab ...string) {
+	if app.settingsWin != nil {
+		app.settingsWin.Open(initialTab...)
 	}
-	app.RefreshUI()
 }
 
 // OpenBrowserLauncher 打开 Raycast 风格网址输入启动器
@@ -125,7 +119,7 @@ func NewAppUI(
 		showModal:           false,
 		selectedFormat:      0,
 		downloadAllEpisodes: false,
-		settingsTab:         "general",
+		settingsWin:         NewSettingsWindow(),
 	}
 
 	app.refreshData()
@@ -238,9 +232,6 @@ func (app *AppUI) View(c *ui.Context) {
 	if app.showBrowserLauncher {
 		app.renderBrowserLauncherModal(c, pal)
 	}
-	if app.showSettings {
-		app.renderSettingsModal(c, pal)
-	}
 	if app.showShortcuts {
 		app.renderShortcutsModal(c, pal)
 	}
@@ -304,23 +295,21 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			app.renderSidebarItem(c, "library", "媒体资料库", iconFilm, 0, pal)
 		})
 
-		// 底部工具条: [设置纯图标] [浏览器纯图标] (颜色完全一致、尺寸对称、纯图标设计)
-		ui.Row(c).Padding(10, 12, 14, 12).Gap(8).AlignItems(ui.Center).Children(func() {
-			settingsBtn := ui.Row(c).Height(34).Grow(1).Radius(8).
-				Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).
-				Justify(ui.Center).AlignItems(ui.Center)
+		// 底部纯图标工具条: 左右两端对齐，不占满整行，纯图标设计
+		ui.Row(c).Height(38).Padding(0, 16).AlignItems(ui.Center).Children(func() {
+			settingsBtn := ui.Box(c).Size(28, 28).Radius(6).Justify(ui.Center).AlignItems(ui.Center)
 			settingsBtn.Children(func() {
-				ui.Icon(c, iconSettings).FontSize(15).TextColor(pal.TextSecondary)
+				ui.Icon(c, iconSettings).FontSize(16).TextColor(pal.TextSecondary)
 			})
 			if settingsBtn.Clicked() {
 				app.OpenSettings()
 			}
 
-			browserBtn := ui.Row(c).Height(34).Grow(1).Radius(8).
-				Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).
-				Justify(ui.Center).AlignItems(ui.Center)
+			ui.Spacer(c)
+
+			browserBtn := ui.Box(c).Size(28, 28).Radius(6).Justify(ui.Center).AlignItems(ui.Center)
 			browserBtn.Children(func() {
-				ui.Icon(c, iconGlobe).FontSize(15).TextColor(pal.TextSecondary)
+				ui.Icon(c, iconGlobe).FontSize(16).TextColor(pal.TextSecondary)
 			})
 			if browserBtn.Clicked() {
 				app.OpenBrowserLauncher()
@@ -1000,82 +989,86 @@ func (app *AppUI) HandleSniffedCandidate(cand *model.Candidate) {
 }
 
 
-// renderBrowserLauncherModal 渲染 Raycast 风格的沉浸式网址输入与快速导航启动器
+// renderBrowserLauncherModal 渲染极简 Raycast 风格的网址输入与直达启动器
 func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 	ui.Modal(c, &app.showBrowserLauncher, func() {
-		ui.Column(c).Width(580).Gap(14).Children(func() {
-			// 1. Raycast 风格大输入行
-			ui.Row(c).Height(46).Padding(0, 14).Gap(10).Radius(10).
-				Background(pal.CardBg).BorderWidth(1).BorderColor(pal.Accent).AlignItems(ui.Center).Children(func() {
-				ui.Icon(c, iconGlobe).FontSize(18).TextColor(pal.Accent)
-				in := ui.TextInput(c, &app.launcherInput).Placeholder("输入视频网页地址或搜索关键词，按回车启动专用浏览器...").
-					FontSize(13).Grow(1).TextColor(pal.TextPrimary)
+		// 单一外框容器: 无多余嵌套边框
+		ui.Column(c).Width(520).Radius(12).Background(pal.CardBg).
+			BorderWidth(1).BorderColor(pal.CardBorder).Children(func() {
+
+			// 1. 一体化纯净搜索栏 (无内层嵌套边框与背景)
+			ui.Row(c).Height(48).Padding(0, 16).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconSearch).FontSize(17).TextColor(pal.TextSecondary)
+				in := ui.TextInput(c, &app.launcherInput).Placeholder("输入网址或搜索关键词...").
+					FontSize(14).Grow(1).TextColor(pal.TextPrimary)
 				in.Focus()
 				if in.Shortcut(0, ui.KeyEnter) {
 					app.launchBrowserFromInput()
 				}
 
-				openBadge := ui.Row(c).Height(24).Padding(0, 8).Radius(6).Background(pal.AccentLight).AlignItems(ui.Center)
-				openBadge.Children(func() {
-					ui.Text(c, "前往 ↩").FontSize(11).Bold().TextColor(pal.Accent)
+				// 极简回车徽标
+				enterBadge := ui.Row(c).Height(20).Padding(0, 6).Radius(4).
+					Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+				enterBadge.Children(func() {
+					ui.Text(c, "↵").FontSize(11).Bold().TextColor(pal.TextMuted)
 				})
-				if openBadge.Clicked() {
-					app.launchBrowserFromInput()
-				}
 			})
 
-			// 2. 常用视频平台快捷直达标签
-			ui.Column(c).Gap(6).Children(func() {
-				ui.Text(c, "常用视频平台快捷直达").FontSize(11).Bold().TextColor(pal.TextMuted)
+			// 细分割线
+			ui.Box(c).Height(1).Fill().Background(pal.CardBorder)
+
+			// 2. 常用平台快捷直达网格 (充满整行宽度，不留右侧空隙)
+			ui.Column(c).Padding(12, 14, 14, 14).Gap(8).Children(func() {
+				ui.Text(c, "快捷直达").FontSize(11).Bold().TextColor(pal.TextMuted)
+
 				hubs := []struct {
-					name string
-					url  string
+					name  string
+					url   string
+					color string
 				}{
-					{"哔哩哔哩 Bilibili", "https://www.bilibili.com"},
-					{"YouTube", "https://www.youtube.com"},
-					{"抖音 Douyin", "https://www.douyin.com"},
-					{"Twitter / X", "https://x.com"},
-					{"腾讯视频", "https://v.qq.com"},
-					{"爱奇艺", "https://www.iqiyi.com"},
+					{"哔哩哔哩", "https://www.bilibili.com", "#fb7299"},
+					{"YouTube", "https://www.youtube.com", "#ff0000"},
+					{"抖音", "https://www.douyin.com", "#00f2fe"},
+					{"微博视频", "https://weibo.com", "#fa7d3c"},
+					{"腾讯视频", "https://v.qq.com", "#0052d9"},
+					{"爱奇艺", "https://www.iqiyi.com", "#00cc4c"},
 				}
 
-				ui.Row(c).Gap(6).Children(func() {
+				// 第一行 3 个 (每个 Grow(1)，平分整行)
+				ui.Row(c).Gap(8).Children(func() {
 					for _, hub := range hubs[:3] {
 						h := hub
-						tag := ui.Row(c).Height(28).Padding(0, 10).Gap(6).Radius(6).
-							Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-						tag.Children(func() {
-							ui.Text(c, h.name).FontSize(11).TextColor(pal.TextSecondary)
+						card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
+							Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+						card.Children(func() {
+							ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
+							ui.Text(c, h.name).FontSize(12).Bold().TextColor(pal.TextPrimary).Grow(1)
+							ui.Text(c, "›").FontSize(12).TextColor(pal.TextMuted)
 						})
-						if tag.Clicked() {
+						if card.Clicked() {
 							app.showBrowserLauncher = false
 							app.browserMgr.Open(h.url)
 						}
 					}
 				})
-				ui.Row(c).Gap(6).Children(func() {
+
+				// 第二行 3 个 (每个 Grow(1)，平分整行)
+				ui.Row(c).Gap(8).Children(func() {
 					for _, hub := range hubs[3:] {
 						h := hub
-						tag := ui.Row(c).Height(28).Padding(0, 10).Gap(6).Radius(6).
-							Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-						tag.Children(func() {
-							ui.Text(c, h.name).FontSize(11).TextColor(pal.TextSecondary)
+						card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
+							Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+						card.Children(func() {
+							ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
+							ui.Text(c, h.name).FontSize(12).Bold().TextColor(pal.TextPrimary).Grow(1)
+							ui.Text(c, "›").FontSize(12).TextColor(pal.TextMuted)
 						})
-						if tag.Clicked() {
+						if card.Clicked() {
 							app.showBrowserLauncher = false
 							app.browserMgr.Open(h.url)
 						}
 					}
 				})
-			})
-
-			// 3. 底部微提示
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Icon(c, iconCheckCircle).FontSize(11).TextColor(pal.Success)
-				ui.Box(c).Width(4)
-				ui.Text(c, "专用浏览器内置 WebKit Chrome 131 桌面引擎与流媒体深度嗅探").FontSize(11).TextColor(pal.TextMuted)
-				ui.Spacer(c)
-				ui.Text(c, "Esc 关闭").FontSize(10).TextColor(pal.TextMuted)
 			})
 		})
 	})
@@ -1095,453 +1088,11 @@ func (app *AppUI) launchBrowserFromInput() {
 	app.browserMgr.Open(raw)
 }
 
-// renderSettingsModal 渲染现代 Raycast / macOS 系统设置双分栏面板 (对标 media_1791632651200)
-func (app *AppUI) renderSettingsModal(c *ui.Context, pal Palette) {
-	cfg := config.Global()
-	s := cfg.Get()
 
-	ui.Modal(c, &app.showSettings, func() {
-		// 整体分栏容器: 宽 760, 高 490
-		ui.Row(c).Width(760).Height(490).Radius(12).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Children(func() {
-			// =========================
-			// 1. 左侧导航边栏 (宽 210)
-			// =========================
-			ui.Column(c).Width(210).Shrink(0).Padding(16, 12).Gap(10).Background(pal.SidebarBg).Children(func() {
-				// 应用身份卡片
-				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-					ui.Row(c).Size(28, 28).Radius(7).Background(pal.Accent).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconFilm).FontSize(15).TextColor(ui.Hex("#ffffff"))
-					})
-					ui.Column(c).Gap(1).Children(func() {
-						ui.Text(c, "MediaGo").FontSize(13).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, "设置中心 · Pro").FontSize(10).TextColor(pal.TextMuted)
-					})
-				})
 
-				// 搜索设置输入框
-				ui.Row(c).Height(28).Padding(0, 8).Gap(6).Radius(6).
-					Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconSearch).FontSize(12).TextColor(pal.TextMuted)
-					ui.TextInput(c, &app.settingsSearch).Placeholder("搜索设置...").FontSize(11).Grow(1).TextColor(pal.TextPrimary)
-				})
 
-				ui.Box(c).Height(4)
 
-				// 分类导航项
-				navTabs := []struct {
-					id    string
-					label string
-					icon  *ui.SVG
-				}{
-					{"general", "通用设置 (General)", iconSettings},
-					{"downloader", "下载与引擎 (Downloader)", iconDownload},
-					{"browser", "嗅探浏览器 (Browser)", iconGlobe},
-					{"storage", "存储与目录 (Storage)", iconFolder},
-					{"about", "关于与快捷键 (About)", iconInfo},
-				}
 
-				ui.Column(c).Gap(3).Grow(1).Children(func() {
-					for _, tab := range navTabs {
-						t := tab
-						isSel := app.settingsTab == t.id
-						bg := ui.Transparent
-						textC := pal.TextSecondary
-						if isSel {
-							bg = pal.AccentLight
-							textC = pal.Accent
-						}
-
-						item := ui.Row(c).Height(32).Padding(0, 10).Gap(8).Radius(6).Background(bg).AlignItems(ui.Center)
-						item.Children(func() {
-							ui.Icon(c, t.icon).FontSize(13).TextColor(textC)
-							ui.Text(c, t.label).FontSize(12).TextColor(textC)
-						})
-						if item.Clicked() {
-							app.settingsTab = t.id
-						}
-					}
-				})
-			})
-
-			// 细腻垂直分割线
-			ui.Box(c).Width(1).Height(490).Background(pal.CardBorder)
-
-			// =========================
-			// 2. 右侧详情配置区 (宽 549)
-			// =========================
-			ui.Column(c).Width(548).Shrink(0).Padding(16, 20).Gap(16).Children(func() {
-				// 顶部 Header: 标题与极简关闭图标
-				ui.Row(c).AlignItems(ui.Center).Children(func() {
-					titleText := "通用设置"
-					switch app.settingsTab {
-					case "downloader":
-						titleText = "下载与引擎"
-					case "browser":
-						titleText = "嗅探浏览器"
-					case "storage":
-						titleText = "存储与目录"
-					case "about":
-						titleText = "关于 MediaGo"
-					}
-					ui.Text(c, titleText).FontSize(16).Bold().TextColor(pal.TextPrimary)
-					ui.Spacer(c)
-
-					// 纯图标关闭按钮 (Esc 退出，无任何多余“完成”按钮)
-					closeBtn := ui.Row(c).Size(24, 24).Radius(12).Justify(ui.Center).AlignItems(ui.Center)
-					closeBtn.Children(func() {
-						ui.Icon(c, iconClose).FontSize(13).TextColor(pal.TextSecondary)
-					})
-					if closeBtn.Clicked() {
-						app.showSettings = false
-					}
-				})
-
-				// 详情面板根据 settingsTab 动态渲染
-				switch app.settingsTab {
-				case "general":
-					app.renderSettingsGeneral(c, pal, cfg, s)
-				case "downloader":
-					app.renderSettingsDownloader(c, pal, cfg, s)
-				case "browser":
-					app.renderSettingsBrowser(c, pal, cfg, s)
-				case "storage":
-					app.renderSettingsStorage(c, pal, cfg, s)
-				case "about":
-					app.renderSettingsAbout(c, pal, cfg, s)
-				default:
-					app.renderSettingsGeneral(c, pal, cfg, s)
-				}
-			})
-		})
-	})
-}
-
-// renderSettingsGeneral 渲染通用设置 (外观、通知、启动)
-func (app *AppUI) renderSettingsGeneral(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(14).Children(func() {
-		// 外观主题
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "APPEARANCE 外观").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "界面色彩外观 (Theme)").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "跟随 macOS 系统设置或指定明暗模式").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				themes := []struct{ id, label string }{
-					{"system", "跟随系统"},
-					{"light", "浅色"},
-					{"dark", "深色"},
-				}
-				ui.Row(c).Gap(4).Children(func() {
-					for _, th := range themes {
-						isSel := s.Theme == th.id
-						bg := pal.CardBg
-						textC := pal.TextSecondary
-						borderC := pal.CardBorder
-						if isSel {
-							bg = pal.AccentLight
-							textC = pal.Accent
-							borderC = pal.Accent
-						}
-						btn := ui.Row(c).Height(26).Padding(0, 10).Radius(5).Background(bg).BorderWidth(1).BorderColor(borderC).AlignItems(ui.Center)
-						btn.Children(func() {
-							ui.Text(c, th.label).FontSize(11).Bold().TextColor(textC)
-						})
-						if btn.Clicked() {
-							cfg.Update(func(st *config.Settings) { st.Theme = th.id })
-						}
-					}
-				})
-			})
-		})
-
-		// 系统行为
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "NOTIFICATIONS & ACTIONS 交互").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			// 通知开关
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "任务完成系统原生通知").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "视频下载或转码完成时在通知中心显示提示").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				swBg := pal.CardBorder
-				if s.Notifications {
-					swBg = pal.Accent
-				}
-				sw := ui.Row(c).Size(36, 20).Radius(10).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-				if s.Notifications {
-					sw.Justify(ui.End)
-				}
-				sw.Children(func() {
-					ui.Box(c).Size(16, 16).Radius(8).Background(ui.Hex("#ffffff"))
-				})
-				if sw.Clicked() {
-					cfg.Update(func(st *config.Settings) { st.Notifications = !st.Notifications })
-				}
-			})
-
-			// 自动开始
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "自动启动新加入的任务").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "新建任务确认后自动进入调度队列立即开始").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				swBg := pal.CardBorder
-				if s.AutoStart {
-					swBg = pal.Accent
-				}
-				sw := ui.Row(c).Size(36, 20).Radius(10).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-				if s.AutoStart {
-					sw.Justify(ui.End)
-				}
-				sw.Children(func() {
-					ui.Box(c).Size(16, 16).Radius(8).Background(ui.Hex("#ffffff"))
-				})
-				if sw.Clicked() {
-					cfg.Update(func(st *config.Settings) { st.AutoStart = !st.AutoStart })
-				}
-			})
-		})
-	})
-}
-
-// renderSettingsDownloader 渲染下载与引擎设置
-func (app *AppUI) renderSettingsDownloader(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(14).Children(func() {
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "CONCURRENCY 并发控制").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			// 并发数行
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "最大并发下载任务数").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "全局同时处于活动下载状态的任务上限限制").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				limits := []int{1, 2, 3, 4, 6}
-				ui.Row(c).Gap(4).Children(func() {
-					for _, limit := range limits {
-						isSel := s.MaxConcurrent == limit
-						bg := pal.CardBg
-						textC := pal.TextSecondary
-						borderC := pal.CardBorder
-						if isSel {
-							bg = pal.AccentLight
-							textC = pal.Accent
-							borderC = pal.Accent
-						}
-						label := fmt.Sprintf("%d 个", limit)
-						btn := ui.Row(c).Height(26).Padding(0, 8).Radius(5).Background(bg).BorderWidth(1).BorderColor(borderC).AlignItems(ui.Center)
-						btn.Children(func() {
-							ui.Text(c, label).FontSize(11).Bold().TextColor(textC)
-						})
-						if btn.Clicked() {
-							cfg.Update(func(st *config.Settings) { st.MaxConcurrent = limit })
-						}
-					}
-				})
-			})
-		})
-
-		// 核心引擎状态
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "CORE BINARIES 核心组件就绪状态").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(6).Grow(1).Children(func() {
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconCheckCircle).FontSize(13).TextColor(pal.Success)
-						ui.Text(c, "yt-dlp 多站点媒体提取核心: 已就绪 (v2026.08.01)").FontSize(11).Bold().TextColor(pal.TextPrimary)
-					})
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconCheckCircle).FontSize(13).TextColor(pal.Success)
-						ui.Text(c, "ffmpeg DASH 音视频自动 Muxing 转码合并管道: 就绪").FontSize(11).TextColor(pal.TextSecondary)
-					})
-				})
-			})
-		})
-	})
-}
-
-// renderSettingsBrowser 渲染嗅探浏览器设置
-func (app *AppUI) renderSettingsBrowser(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(14).Children(func() {
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "SNIFFER & WEBVIEW 专用浏览器配置").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			// Chrome 顶栏地址栏开关
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "页面顶部 Chrome 风格 Omnibox 地址栏").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "在专用浏览器顶部悬浮地址输入框与后退/前进/刷新控制条").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				swBg := pal.CardBorder
-				if s.InjectedOmnibox {
-					swBg = pal.Accent
-				}
-				sw := ui.Row(c).Size(36, 20).Radius(10).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-				if s.InjectedOmnibox {
-					sw.Justify(ui.End)
-				}
-				sw.Children(func() {
-					ui.Box(c).Size(16, 16).Radius(8).Background(ui.Hex("#ffffff"))
-				})
-				if sw.Clicked() {
-					cfg.Update(func(st *config.Settings) { st.InjectedOmnibox = !st.InjectedOmnibox })
-				}
-			})
-
-			// Chrome 131 桌面 UA 伪装
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "桌面版 Chrome 131 User-Agent 伪装").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "避免 Bilibili、YouTube 等视频站点提示浏览器版本过低").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				swBg := pal.CardBorder
-				if s.UserAgentSpoof {
-					swBg = pal.Accent
-				}
-				sw := ui.Row(c).Size(36, 20).Radius(10).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-				if s.UserAgentSpoof {
-					sw.Justify(ui.End)
-				}
-				sw.Children(func() {
-					ui.Box(c).Size(16, 16).Radius(8).Background(ui.Hex("#ffffff"))
-				})
-				if sw.Clicked() {
-					cfg.Update(func(st *config.Settings) { st.UserAgentSpoof = !st.UserAgentSpoof })
-				}
-			})
-
-			// 播放页深度自动嗅探
-			ui.Row(c).Width(508).Padding(10, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "播放页流媒体深度感知").FontSize(12).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "浏览视频时自动检测 m3u8/mp4 及剧集列表并提示下载").FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				swBg := pal.CardBorder
-				if s.AutoDetectStream {
-					swBg = pal.Accent
-				}
-				sw := ui.Row(c).Size(36, 20).Radius(10).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-				if s.AutoDetectStream {
-					sw.Justify(ui.End)
-				}
-				sw.Children(func() {
-					ui.Box(c).Size(16, 16).Radius(8).Background(ui.Hex("#ffffff"))
-				})
-				if sw.Clicked() {
-					cfg.Update(func(st *config.Settings) { st.AutoDetectStream = !st.AutoDetectStream })
-				}
-			})
-		})
-	})
-}
-
-// renderSettingsStorage 渲染存储与目录设置
-func (app *AppUI) renderSettingsStorage(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(14).Children(func() {
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "STORAGE PATH 下载文件存放位置").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			ui.Column(c).Width(508).Padding(12, 14).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).Gap(10).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconFolder).FontSize(14).TextColor(pal.Accent)
-					ui.Box(c).Width(6)
-					ui.Text(c, s.DownloadDir).FontSize(11).TextColor(pal.TextPrimary).SingleLine().Grow(1).MinWidth(0)
-				})
-
-				ui.Row(c).Gap(8).Children(func() {
-					changeBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(5).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-					changeBtn.Children(func() {
-						ui.Text(c, "更改保存目录…").FontSize(11).TextColor(pal.TextPrimary)
-					})
-					if changeBtn.Clicked() {
-						go func() {
-							paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-								Title:       "选择媒体下载保存目录",
-								Directory:   true,
-								DefaultPath: s.DownloadDir,
-							})
-							if err == nil && len(paths) > 0 {
-								cfg.Update(func(st *config.Settings) {
-									st.DownloadDir = paths[0]
-								})
-							}
-						}()
-					}
-
-					finderBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(5).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-					finderBtn.Children(func() {
-						ui.Text(c, "在 Finder 中显示").FontSize(11).TextColor(pal.TextSecondary)
-					})
-					if finderBtn.Clicked() {
-						_ = exec.Command("open", s.DownloadDir).Start()
-					}
-				})
-			})
-		})
-	})
-}
-
-// renderSettingsAbout 渲染关于与配置文件
-func (app *AppUI) renderSettingsAbout(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(14).Children(func() {
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "ABOUT MEDIAGO 应用与配置文件").FontSize(10).Bold().TextColor(pal.TextMuted)
-
-			ui.Column(c).Width(508).Padding(12, 14).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).Gap(8).Children(func() {
-				ui.Text(c, "MediaGo · 纯 Go 原生高性能媒体下载管理器").FontSize(13).Bold().TextColor(pal.TextPrimary)
-				ui.Text(c, "基于 MyGo 原生 GPU 渲染框架构建 · 极简极速 · 零 Webview 纯原生 UI").FontSize(11).TextColor(pal.TextSecondary)
-
-				ui.Box(c).Height(4)
-				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-					ui.Text(c, "配置文件路径:").FontSize(11).TextColor(pal.TextMuted)
-					ui.Text(c, cfg.Path()).FontSize(11).TextColor(pal.TextSecondary)
-				})
-
-				ui.Row(c).Gap(8).Children(func() {
-					openCfgBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(5).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-					openCfgBtn.Children(func() {
-						ui.Text(c, "在系统编辑器中打开配置文件 (Open Config)").FontSize(11).TextColor(pal.Accent)
-					})
-					if openCfgBtn.Clicked() {
-						_ = exec.Command("open", cfg.Path()).Start()
-					}
-				})
-			})
-		})
-
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "KEYBOARD SHORTCUTS 核心快捷键").FontSize(10).Bold().TextColor(pal.TextMuted)
-			keys := [][2]string{
-				{"新建下载任务", "⌘N"},
-				{"打开网址启动器 (Raycast 风格)", "⌘B"},
-				{"打开偏好设置", "⌘,"},
-				{"快捷键速查", "⌘/"},
-				{"退出 / 关闭浮层", "Esc"},
-			}
-			ui.Row(c).Width(508).Padding(8, 12).Radius(8).Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).Children(func() {
-				ui.Column(c).Gap(4).Grow(1).Children(func() {
-					for _, k := range keys {
-						ui.Row(c).MinHeight(22).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, k[0]).FontSize(11).Grow(1).TextColor(pal.TextSecondary)
-							ui.Text(c, k[1]).FontSize(10).Bold().Padding(1, 5).Radius(4).Background(pal.CardBorder).TextColor(pal.TextPrimary)
-						})
-					}
-				})
-			})
-		})
-	})
-}
 
 // renderShortcutsModal 渲染键盘快捷键速查面板 (对标 godiff/palette.go shortcutsHelp)
 func (app *AppUI) renderShortcutsModal(c *ui.Context, pal Palette) {
