@@ -1,20 +1,24 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/google/uuid"
 	"mediago/internal/discovery"
 	"mediago/internal/model"
 )
 
-// SniffCallback 发现媒体时的回调函数
+// TaskSubmitCallback 浏览器确认下载时提交任务给调度器的回调
+type TaskSubmitCallback func(task *model.Task)
+
+// SniffCallback 兼容旧回调
 type SniffCallback func(candidate *model.Candidate)
 
 // TabInfo 标签页状态
@@ -29,16 +33,33 @@ type TabInfo struct {
 // Manager 管理独立 WKWebView 浏览器窗口
 type Manager struct {
 	window       *mygo.Window
+	onSubmitTask TaskSubmitCallback
 	onMediaFound SniffCallback
+	extractor    *discovery.YtDlpExtractor
+	downloadDir  string
+	lastCand     *model.Candidate
 	mu           sync.Mutex
 	isSniffing   bool
 }
 
 // NewManager 初始化浏览器管理器
-func NewManager(cb SniffCallback) *Manager {
-	return &Manager{
-		onMediaFound: cb,
+func NewManager(onSubmit TaskSubmitCallback, downloadDir ...string) *Manager {
+	dir := ""
+	if len(downloadDir) > 0 {
+		dir = downloadDir[0]
 	}
+	return &Manager{
+		onSubmitTask: onSubmit,
+		extractor:    discovery.NewYtDlpExtractor(),
+		downloadDir:  dir,
+	}
+}
+
+// SetDownloadDir 设置下载保存目录
+func (m *Manager) SetDownloadDir(d string) {
+	m.mu.Lock()
+	m.downloadDir = d
+	m.mu.Unlock()
 }
 
 // Open 打开或聚焦专用浏览器窗口 (Gorex 风格无标题栏、毛玻璃底衬、多标签页)
@@ -94,38 +115,173 @@ func (m *Manager) Open(initialURL string) {
 
 	// 监听页面导航与加载完成，注入 Gorex 风格顶栏与触发独立媒体嗅探
 	page.OnWillNavigate(func(e *mygo.NavigateEvent) {
-		if strings.HasPrefix(e.URL, "mediago-sniff://download") {
+		if strings.HasPrefix(e.URL, "mediago-sniff://extract") {
 			e.PreventDefault()
-			// 解析 url 与 title 参数
-			raw := strings.TrimPrefix(e.URL, "mediago-sniff://download?")
-			parts := strings.Split(raw, "&")
-			var targetURL, targetTitle string
-			for _, p := range parts {
-				kv := strings.SplitN(p, "=", 2)
-				if len(kv) == 2 {
-					switch kv[0] {
-					case "url":
-						targetURL = kv[1]
-					case "title":
-						targetTitle = kv[1]
+			raw := strings.TrimPrefix(e.URL, "mediago-sniff://extract?")
+			q, _ := url.ParseQuery(raw)
+			decURL := q.Get("url")
+			if decURL == "" {
+				return
+			}
+
+			// 在后台异步深度探测，主窗口完全不弹窗
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+				defer cancel()
+
+				cand, err := m.extractor.Extract(ctx, decURL)
+				if err != nil || cand == nil {
+					errStr := "页面视频深度解析受限"
+					if err != nil {
+						errStr = err.Error()
+					}
+					if len([]rune(errStr)) > 35 {
+						errStr = string([]rune(errStr)[:32]) + "..."
+					}
+					escapedErr := strings.ReplaceAll(errStr, `"`, `\"`)
+					escapedErr = strings.ReplaceAll(escapedErr, "\n", " ")
+					script := fmt.Sprintf(`if (window.__mg_render_extract_error) window.__mg_render_extract_error("%s");`, escapedErr)
+					_, _ = page.Eval(script)
+					return
+				}
+
+				m.mu.Lock()
+				m.lastCand = cand
+				m.mu.Unlock()
+
+				type fmtItem struct {
+					ID  string `json:"id"`
+					Res string `json:"res"`
+					Ext string `json:"ext"`
+				}
+				var fmts []fmtItem
+				for _, f := range cand.Formats {
+					fmts = append(fmts, fmtItem{
+						ID:  f.FormatID,
+						Res: f.Resolution,
+						Ext: strings.ToUpper(f.Ext),
+					})
+				}
+				fb, _ := json.Marshal(fmts)
+				escapedTitle := strings.ReplaceAll(cand.Title, `"`, `\"`)
+				escapedTitle = strings.ReplaceAll(escapedTitle, "\n", " ")
+
+				script := fmt.Sprintf(`if (window.__mg_render_parsed_ui) window.__mg_render_parsed_ui("%s", %s, %d);`,
+					escapedTitle, string(fb), len(cand.Episodes))
+				_, _ = page.Eval(script)
+			}()
+			return
+		}
+
+		if strings.HasPrefix(e.URL, "mediago-sniff://confirm-download") {
+			e.PreventDefault()
+			raw := strings.TrimPrefix(e.URL, "mediago-sniff://confirm-download?")
+			q, _ := url.ParseQuery(raw)
+			fmtID := q.Get("fmtId")
+
+			m.mu.Lock()
+			cand := m.lastCand
+			outDir := m.downloadDir
+			m.mu.Unlock()
+
+			if cand != nil && m.onSubmitTask != nil {
+				var selectedFmt *model.MediaFormat
+				for _, f := range cand.Formats {
+					if f.FormatID == fmtID {
+						selectedFmt = &f
+						break
 					}
 				}
-			}
-			if targetURL != "" && m.onMediaFound != nil {
-				decURL, _ := url.QueryUnescape(targetURL)
-				decTitle, _ := url.QueryUnescape(targetTitle)
-				if decTitle == "" {
-					decTitle = "网页媒体资源"
+				if selectedFmt == nil && len(cand.Formats) > 0 {
+					selectedFmt = &cand.Formats[0]
 				}
-				cand := &model.Candidate{
-					ID:        fmt.Sprintf("toast-%d", time.Now().UnixNano()),
-					SourceURL: decURL,
-					Title:     decTitle,
-					Author:    "浏览器浮窗下载",
-					CreatedAt: time.Now(),
+
+				dlURL := cand.SourceURL
+				engineType := model.EngineExtractor
+				ext := "mp4"
+				var totalBytes int64
+				if selectedFmt != nil {
+					if selectedFmt.URL != "" {
+						dlURL = selectedFmt.URL
+					}
+					if selectedFmt.Protocol == "m3u8" {
+						engineType = model.EngineHLS
+					}
+					if selectedFmt.Ext != "" {
+						ext = selectedFmt.Ext
+					}
+					totalBytes = selectedFmt.Filesize
 				}
-				m.onMediaFound(cand)
+
+				cleanTitle := strings.TrimSpace(cand.Title)
+				if cleanTitle == "" {
+					cleanTitle = "视频资源"
+				}
+				fn := fmt.Sprintf("%s.%s", cleanTitle, ext)
+
+				task := &model.Task{
+					ID:             uuid.New().String(),
+					Title:          cleanTitle,
+					SourceURL:      cand.SourceURL,
+					DownloadURL:    dlURL,
+					Engine:         engineType,
+					Status:         model.StatusQueued,
+					TotalBytes:     totalBytes,
+					OutputDir:      outDir,
+					OutputFilename: fn,
+					Priority:       1,
+					CreatedAt:      time.Now(),
+					UpdatedAt:      time.Now(),
+				}
+				m.onSubmitTask(task)
 			}
+			_, _ = page.Eval(`if (window.__mg_render_success) window.__mg_render_success();`)
+			return
+		}
+
+		if strings.HasPrefix(e.URL, "mediago-sniff://direct-download") {
+			e.PreventDefault()
+			raw := strings.TrimPrefix(e.URL, "mediago-sniff://direct-download?")
+			q, _ := url.ParseQuery(raw)
+			directURL := q.Get("directUrl")
+			tTitle := q.Get("title")
+			if tTitle == "" {
+				tTitle = "嗅探直链视频"
+			}
+
+			if directURL != "" && m.onSubmitTask != nil {
+				m.mu.Lock()
+				outDir := m.downloadDir
+				m.mu.Unlock()
+
+				proto := "http"
+				ext := "mp4"
+				if strings.Contains(directURL, ".m3u8") {
+					proto = "m3u8"
+					ext = "ts"
+				}
+				engineType := model.EngineDirect
+				if proto == "m3u8" {
+					engineType = model.EngineHLS
+				}
+
+				task := &model.Task{
+					ID:             uuid.New().String(),
+					Title:          tTitle,
+					SourceURL:      directURL,
+					DownloadURL:    directURL,
+					Engine:         engineType,
+					Status:         model.StatusQueued,
+					OutputDir:      outDir,
+					OutputFilename: fmt.Sprintf("%s.%s", tTitle, ext),
+					Priority:       1,
+					CreatedAt:      time.Now(),
+					UpdatedAt:      time.Now(),
+				}
+				m.onSubmitTask(task)
+			}
+			_, _ = page.Eval(`if (window.__mg_render_success) window.__mg_render_success();`)
+			return
 		}
 	})
 
@@ -205,7 +361,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						left: 0 !important;
 						right: 0 !important;
 						height: 44px !important;
-						padding: 0 12px 0 78px !important;
+						padding: 0 14px 0 88px !important;
 						display: flex !important;
 						align-items: center !important;
 						gap: 10px !important;
@@ -270,11 +426,12 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						-webkit-app-region: no-drag !important;
 					}
 
-					/* 导航控制区 (后退/前进) */
+					/* 导航控制区 (后退/前进，左侧留出舒适呼吸间距) */
 					.mg-nav-actions {
 						display: flex;
 						align-items: center;
 						gap: 4px;
+						margin-left: 4px !important;
 						flex-shrink: 0;
 					}
 					.mg-icon-btn {
@@ -484,7 +641,43 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						from { opacity: 0; transform: translateY(16px) scale(0.96); }
 						to { opacity: 1; transform: translateY(0) scale(1); }
 					}
+					/* 动态旋转菊花 Loading 动画 */
+					.mg-spinner {
+						width: 14px;
+						height: 14px;
+						border: 2px solid rgba(255, 255, 255, 0.25);
+						border-top-color: #0071e3;
+						border-radius: 50%;
+						animation: mgSpinAnim 0.8s linear infinite;
+						display: inline-block;
+						flex-shrink: 0;
+					}
+					@keyframes mgSpinAnim {
+						to { transform: rotate(360deg); }
+					}
+
+					/* 原地解析规格下拉框 */
+					.mg-format-select {
+						height: 28px;
+						border-radius: 6px;
+						background: rgba(255, 255, 255, 0.1);
+						border: 1px solid rgba(255, 255, 255, 0.16);
+						color: #ffffff;
+						font-size: 11px;
+						padding: 0 8px;
+						outline: none;
+						width: 100%;
+					}
 					@media (prefers-color-scheme: light) {
+						.mg-spinner {
+							border-color: rgba(0, 0, 0, 0.15);
+							border-top-color: #0071e3;
+						}
+						.mg-format-select {
+							background: rgba(0, 0, 0, 0.05);
+							border-color: rgba(0, 0, 0, 0.12);
+							color: #1d1d1f;
+						}
 						#mg-sniff-toast-card {
 							background: rgba(255, 255, 255, 0.94) !important;
 							border: 0.5px solid rgba(0, 0, 0, 0.12) !important;
@@ -536,12 +729,12 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				</div>
 				<div class="mg-right-actions">
 					<button class="mg-reload-btn mg-interactive" id="mg-nav-reload" title="刷新页面">
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
 							<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
 						</svg>
 					</button>
 					<button class="mg-new-tab-btn mg-interactive" id="mg-new-tab" title="新建标签页 (+)">
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+						<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
 							<line x1="12" y1="5" x2="12" y2="19"></line>
 							<line x1="5" y1="12" x2="19" y2="12"></line>
 						</svg>
@@ -710,27 +903,32 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 	}
 
 	mediaFoundCount := len(res.Media)
+	firstDirectURL := ""
 
-	// 如果检测到是热门视频网站播放页面，自动推送页面候选供主应用深度解析
+	// 找出是否存在已嗅探的直接媒体 URL (mp4, m3u8)
+	for _, mediaURL := range res.Media {
+		mediaURL = strings.TrimSpace(mediaURL)
+		if mediaURL == "" {
+			continue
+		}
+		isDirect, _ := discovery.IsDirectMediaURL(mediaURL)
+		if isDirect && firstDirectURL == "" {
+			firstDirectURL = mediaURL
+		}
+	}
+
+	// 如果检测到是热门视频网站播放页面，计数加 1
 	isKnownVideoPage := strings.Contains(res.URL, "bilibili.com/video/") ||
 		strings.Contains(res.URL, "youtube.com/watch") ||
 		strings.Contains(res.URL, "douyin.com/video") ||
-		strings.Contains(res.URL, "kuaishou.com/short-video")
+		strings.Contains(res.URL, "kuaishou.com/short-video") ||
+		strings.Contains(res.URL, "weibo.com/")
 
 	if isKnownVideoPage && res.Title != "" && !strings.HasPrefix(res.Title, "哔哩哔哩 (゜-゜)つロ 干杯~") {
 		mediaFoundCount++
-		cand := &model.Candidate{
-			ID:        fmt.Sprintf("page-%d", time.Now().UnixNano()),
-			SourceURL: res.URL,
-			Title:     res.Title,
-			Author:    "页面视频发现",
-			CreatedAt: time.Now(),
-		}
-		if m.onMediaFound != nil {
-			log.Printf("[Sniffer] 自动识别视频播放页: %s -> %s\n", res.Title, res.URL)
-			m.onMediaFound(cand)
-		}
 	}
+
+	// 绝不在浏览器内自动调用 m.onMediaFound(cand)，以防抢占主窗口焦点和弹窗！
 
 	// 更新标签栏上的嗅探状态徽标与绿灯
 	if mediaFoundCount > 0 {
@@ -761,7 +959,7 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 		})()`, mediaFoundCount, mediaFoundCount)
 		_, _ = page.Eval(updateBadgeScript)
 
-		// 浏览器右下角浮动下载 Modal Toast (需求 10)
+		// 浏览器右下角浮动资源解析面板
 		cleanTitle := res.Title
 		if cleanTitle == "" {
 			cleanTitle = "网页媒体资源"
@@ -773,16 +971,101 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 		escapedURL := strings.ReplaceAll(res.URL, `\`, `\\`)
 		escapedURL = strings.ReplaceAll(escapedURL, `"`, `\"`)
 		escapedURL = strings.ReplaceAll(escapedURL, "'", `\'`)
+		escapedDirect := strings.ReplaceAll(firstDirectURL, `\`, `\\`)
+		escapedDirect = strings.ReplaceAll(escapedDirect, `"`, `\"`)
+		escapedDirect = strings.ReplaceAll(escapedDirect, "'", `\'`)
 
 		toastScript := fmt.Sprintf(`(() => {
 			try {
+				window.__mg_first_direct_url = '%s';
+				window.__mg_clean_title = '%s';
+
+				// 挂载资源解析结果回调
+				window.__mg_render_parsed_ui = (title, fmts, episodesCount) => {
+					let toast = document.getElementById('mg-sniff-toast-card');
+					if (!toast) return;
+					let optionsHtml = '';
+					if (fmts && fmts.length > 0) {
+						optionsHtml = fmts.map(f => `+"`"+`<option value="${f.id}">${f.res} (${f.ext})</option>`+"`"+`).join('');
+					} else {
+						optionsHtml = '<option value="">默认最优规格</option>';
+					}
+					const epBadge = episodesCount > 1 ? `+"`"+`<span style="font-size:10px;background:rgba(0,113,227,0.15);color:#0071e3;padding:2px 6px;border-radius:4px;font-weight:600;">共 ${episodesCount} 集</span>`+"`"+` : '';
+					toast.innerHTML = `+"`"+`
+						<div style="display:flex;align-items:center;justify-content:space-between;">
+							<div style="display:flex;align-items:center;gap:6px;">
+								<span style="font-size:13px;">🎬</span>
+								<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">资源解析就绪</span>
+								${epBadge}
+							</div>
+							<button id="mg-sniff-close" style="border:none;background:transparent;color:rgba(255,255,255,0.45);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;">✕</button>
+						</div>
+						<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="${title}">${title}</div>
+						<div style="display:flex;flex-direction:column;gap:5px;margin-top:2px;">
+							<label style="font-size:11px;color:rgba(255,255,255,0.6);">选择清晰度规格:</label>
+							<select class="mg-format-select" id="mg-card-fmt">${optionsHtml}</select>
+						</div>
+						<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px;">
+							<button id="mg-sniff-cancel" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">取消</button>
+							<button id="mg-sniff-confirm-btn" style="height:26px;padding:0 14px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">开始下载</button>
+						</div>
+					`+"`"+`;
+					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+					toast.querySelector('#mg-sniff-cancel').onclick = () => toast.remove();
+					toast.querySelector('#mg-sniff-confirm-btn').onclick = () => {
+						const selFmt = toast.querySelector('#mg-card-fmt').value;
+						window.location.href = 'mediago-sniff://confirm-download?fmtId=' + encodeURIComponent(selFmt);
+					};
+				};
+
+				// 挂载解析失败回调 (支持直链兜底)
+				window.__mg_render_extract_error = (errMsg) => {
+					let toast = document.getElementById('mg-sniff-toast-card');
+					if (!toast) return;
+					const directURL = window.__mg_first_direct_url || '';
+					let fallbackHtml = '';
+					if (directURL) {
+						fallbackHtml = '<button id="mg-sniff-direct-btn" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:#34c759;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">直接下载嗅探直链</button>';
+					}
+					toast.innerHTML = `+"`"+`
+						<div style="display:flex;align-items:center;justify-content:space-between;">
+							<div style="display:flex;align-items:center;gap:6px;">
+								<span style="font-size:13px;">⚠️</span>
+								<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ff453a;">视频解析受限</span>
+							</div>
+							<button id="mg-sniff-close" style="border:none;background:transparent;color:rgba(255,255,255,0.45);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;">✕</button>
+						</div>
+						<div style="font-size:11px;line-height:1.4;color:rgba(255,255,255,0.7);">${errMsg}</div>
+						<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px;">
+							<button id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>
+							${fallbackHtml}
+						</div>
+					`+"`"+`;
+					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+					toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
+					if (toast.querySelector('#mg-sniff-direct-btn')) {
+						toast.querySelector('#mg-sniff-direct-btn').onclick = () => {
+							window.location.href = 'mediago-sniff://direct-download?directUrl=' + encodeURIComponent(directURL) + '&title=' + encodeURIComponent(window.__mg_clean_title || '嗅探直链视频');
+						};
+					}
+				};
+
+				// 挂载下载提交成功反馈
+				window.__mg_render_success = () => {
+					let toast = document.getElementById('mg-sniff-toast-card');
+					if (!toast) return;
+					toast.innerHTML = '<div style="font-size:12px;color:#34c759;font-weight:600;padding:10px 0;text-align:center;">✓ 已加入下载队列，在主窗口查看进度</div>';
+					setTimeout(() => { if (toast) toast.remove(); }, 2200);
+				};
+
+				// 渲染初始嗅探卡片
 				let toast = document.getElementById('mg-sniff-toast-card');
 				if (!toast) {
 					toast = document.createElement('div');
 					toast.id = 'mg-sniff-toast-card';
 					document.documentElement.appendChild(toast);
 				}
-				toast.innerHTML = ` + "`" + `
+				toast.innerHTML = `+"`"+`
 					<div style="display:flex;align-items:center;justify-content:space-between;">
 						<div style="display:flex;align-items:center;gap:6px;">
 							<div class="mg-pulse-dot"></div>
@@ -798,57 +1081,22 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 							<button id="mg-sniff-download-btn" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">立即下载</button>
 						</div>
 					</div>
-				` + "`" + `;
+				`+"`"+`;
 				toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
 				toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
 				toast.querySelector('#mg-sniff-download-btn').onclick = () => {
-					window.location.href = 'mediago-sniff://download?url=' + encodeURIComponent('%s') + '&title=' + encodeURIComponent('%s');
-					toast.innerHTML = '<div style="font-size:12px;color:#34c759;font-weight:600;padding:8px 0;text-align:center;">✓ 已发送至下载中心并开始解析</div>';
-					setTimeout(() => { if (toast) toast.remove(); }, 2200);
+					// 原地切换为解析中 UI (带动态旋转菊花)
+					toast.innerHTML = `+"`"+`
+						<div style="display:flex;align-items:center;gap:8px;padding:8px 0;">
+							<div class="mg-spinner"></div>
+							<span style="font-size:12px;color:#0071e3;font-weight:500;">正在深入解析视频规格与清晰度...</span>
+						</div>
+					`+"`"+`;
+					// 触发后台深度解析
+					window.location.href = 'mediago-sniff://extract?url=' + encodeURIComponent('%s');
 				};
 			} catch (e) {}
-		})()`, escapedTitle, mediaFoundCount, escapedURL, escapedTitle)
+		})()`, escapedDirect, escapedTitle, escapedTitle, mediaFoundCount, escapedURL)
 		_, _ = page.Eval(toastScript)
-	}
-
-	if len(res.Media) == 0 {
-		return
-	}
-
-	for _, mediaURL := range res.Media {
-		mediaURL = strings.TrimSpace(mediaURL)
-		if mediaURL == "" {
-			continue
-		}
-
-		isDirect, ext := discovery.IsDirectMediaURL(mediaURL)
-		if isDirect {
-			proto := "http"
-			if ext == "m3u8" {
-				proto = "m3u8"
-			}
-			cand := &model.Candidate{
-				ID:        fmt.Sprintf("cand-%d", time.Now().UnixNano()),
-				SourceURL: res.URL,
-				Title:     res.Title,
-				Author:    "网页嗅探",
-				Formats: []model.MediaFormat{
-					{
-						FormatID:   "sniffed",
-						Resolution: "Sniffed",
-						Ext:        ext,
-						URL:        mediaURL,
-						Protocol:   proto,
-						Note:       "浏览器嗅探直链",
-					},
-				},
-				CreatedAt: time.Now(),
-			}
-
-			if m.onMediaFound != nil {
-				log.Printf("[Sniffer] 成功嗅探到媒体: %s -> %s\n", res.Title, mediaURL)
-				m.onMediaFound(cand)
-			}
-		}
 	}
 }

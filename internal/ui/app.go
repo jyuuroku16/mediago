@@ -772,7 +772,7 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 
 			if app.isExtracting {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconRefresh).FontSize(14).TextColor(pal.Accent)
+					ui.Spinner(c).FontSize(14).TextColor(pal.Accent)
 					ui.Text(c, "正在深入探测解析视频规格与流媒体分片...").FontSize(12).TextColor(pal.Accent)
 				})
 			}
@@ -839,18 +839,18 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 									app.downloadAllEpisodes = false
 								}
 
-								btnAll := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center).Gap(4)
+								btnAll := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center).Gap(5)
 								if app.downloadAllEpisodes {
 									btnAll.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
 									btnAll.Children(func() {
 										ui.Text(c, batchLabel).FontSize(11).Bold().TextColor(pal.Accent)
-										ui.Text(c, "▾").FontSize(10).TextColor(pal.Accent)
+										ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.Accent)
 									})
 								} else {
 									btnAll.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
 									btnAll.Children(func() {
 										ui.Text(c, batchLabel).FontSize(11).TextColor(pal.TextSecondary)
-										ui.Text(c, "▾").FontSize(10).TextColor(pal.TextMuted)
+										ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.TextMuted)
 									})
 								}
 								if btnAll.Clicked() {
@@ -1264,7 +1264,10 @@ func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
 				if isAllSelected {
 					toggleAllText = "取消全选"
 				}
-				toggleBtn := ui.Button(c, toggleAllText).FontSize(11)
+				toggleBtn := ui.Row(c).Height(24).Padding(0, 10).Radius(5).Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				toggleBtn.Children(func() {
+					ui.Text(c, toggleAllText).FontSize(11).TextColor(pal.TextSecondary)
+				})
 				if toggleBtn.Clicked() {
 					newVal := !isAllSelected
 					for _, ep := range app.candidate.Episodes {
@@ -1285,13 +1288,15 @@ func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
 						}
 						r := ui.Row(c).Height(32).Padding(0, 10).Gap(8).Radius(6).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 						r.Children(func() {
-							chkText := "□"
-							chkColor := pal.TextMuted
+							chkBox := ui.Row(c).Size(16, 16).Radius(4).Center()
 							if isSel {
-								chkText = "☑"
-								chkColor = pal.Accent
+								chkBox.Background(pal.Accent)
+								chkBox.Children(func() {
+									ui.Icon(c, iconCheck).FontSize(10).TextColor(ui.Hex("#ffffff"))
+								})
+							} else {
+								chkBox.Background(pal.InputBg).BorderWidth(1.2).BorderColor(pal.InputBorder)
 							}
-							ui.Text(c, chkText).FontSize(13).Bold().TextColor(chkColor)
 
 							ui.Box(c).Padding(1, 5).Radius(3).Background(pal.InputBg).Children(func() {
 								ui.Text(c, fmt.Sprintf("P%02d", e.Index)).FontSize(10).Bold().TextColor(pal.TextSecondary)
@@ -1311,16 +1316,19 @@ func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
 				})
 			})
 
-			// 3. 底部确定与取消按钮
+			// 3. 底部确定与取消按钮 (统一高度 28px、内边距与圆角，视觉严格对齐)
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Spacer(c)
 
-				cancelBtn := ui.Button(c, "取消").FontSize(12)
+				cancelBtn := ui.Row(c).Height(28).Padding(0, 16).Radius(6).Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				cancelBtn.Children(func() {
+					ui.Text(c, "取消").FontSize(12).TextColor(pal.TextPrimary)
+				})
 				if cancelBtn.Clicked() {
 					app.showEpisodesModal = false
 				}
 
-				confirmBtn := ui.Row(c).Height(30).Padding(0, 16).Radius(6).Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				confirmBtn := ui.Row(c).Height(28).Padding(0, 16).Radius(6).Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 				confirmBtn.Children(func() {
 					ui.Text(c, "确定").FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
 				})

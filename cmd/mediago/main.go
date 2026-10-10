@@ -52,11 +52,12 @@ func main() {
 
 	// 5. 初始化控制器与浏览器管理器
 	var appUI *ui.AppUI
-	browserMgr := browser.NewManager(func(c *model.Candidate) {
+	browserMgr := browser.NewManager(func(task *model.Task) {
+		scheduler.Submit(task)
 		if appUI != nil {
-			appUI.HandleSniffedCandidate(c)
+			appUI.RefreshUI()
 		}
-	})
+	}, s.DownloadDir)
 
 	appUI = ui.NewAppUI(store, scheduler, browserMgr, lib)
 
@@ -64,6 +65,7 @@ func main() {
 	cfg.OnChange(func(latest config.Settings) {
 		scheduler.SetMaxActiveTasks(latest.MaxConcurrent)
 		_ = lib.SetBaseDir(latest.DownloadDir)
+		browserMgr.SetDownloadDir(latest.DownloadDir)
 		config.ApplyTheme(latest.Theme)
 		syncAppMenu(latest)
 		if appUI != nil {
