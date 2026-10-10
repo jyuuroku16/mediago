@@ -793,21 +793,26 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 						ui.Column(c).Padding(10, 12).Radius(8).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Gap(8).Children(func() {
 							ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 								ui.Icon(c, iconList).FontSize(13).TextColor(pal.Accent)
-								ui.Text(c, fmt.Sprintf("检测到多集视频 (共 %d 集)", len(app.candidate.Episodes))).FontSize(12).Bold().TextColor(pal.TextPrimary)
+								ui.Text(c, fmt.Sprintf("检测到多集视频 (共 %d 集)", len(app.candidate.Episodes))).FontSize(12).Bold().TextColor(pal.TextPrimary).SingleLine()
 								if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
 									curEp := app.candidate.Episodes[app.candidate.CurrentPage-1]
 									ui.Spacer(c)
-									ui.Text(c, fmt.Sprintf("当前位于: P%d %s", curEp.Index, curEp.Title)).FontSize(11).TextColor(pal.Accent)
+									epTitle := curEp.Title
+									if len([]rune(epTitle)) > 12 {
+										epTitle = string([]rune(epTitle)[:10]) + "..."
+									}
+									ui.Text(c, fmt.Sprintf("当前位于: P%d %s", curEp.Index, epTitle)).FontSize(11).TextColor(pal.Accent).SingleLine()
 								}
 							})
 
 							curPTitle := fmt.Sprintf("P%d", app.candidate.CurrentPage)
 							if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
 								epObj := app.candidate.Episodes[app.candidate.CurrentPage-1]
-								curPTitle = fmt.Sprintf("P%02d %s", epObj.Index, epObj.Title)
-							}
-							if len([]rune(curPTitle)) > 14 {
-								curPTitle = string([]rune(curPTitle)[:12]) + "..."
+								epTitle := epObj.Title
+								if len([]rune(epTitle)) > 10 {
+									epTitle = string([]rune(epTitle)[:8]) + "..."
+								}
+								curPTitle = fmt.Sprintf("P%02d %s", epObj.Index, epTitle)
 							}
 							curLabel := "仅下载: " + curPTitle
 
@@ -827,12 +832,12 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 								if !app.downloadAllEpisodes {
 									btnCur.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
 									btnCur.Children(func() {
-										ui.Text(c, curLabel).FontSize(11).Bold().TextColor(pal.Accent)
+										ui.Text(c, curLabel).FontSize(11).Bold().TextColor(pal.Accent).SingleLine()
 									})
 								} else {
 									btnCur.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
 									btnCur.Children(func() {
-										ui.Text(c, curLabel).FontSize(11).TextColor(pal.TextSecondary)
+										ui.Text(c, curLabel).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
 									})
 								}
 								if btnCur.Clicked() {
@@ -843,13 +848,13 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 								if app.downloadAllEpisodes {
 									btnAll.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
 									btnAll.Children(func() {
-										ui.Text(c, batchLabel).FontSize(11).Bold().TextColor(pal.Accent)
+										ui.Text(c, batchLabel).FontSize(11).Bold().TextColor(pal.Accent).SingleLine()
 										ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.Accent)
 									})
 								} else {
 									btnAll.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
 									btnAll.Children(func() {
-										ui.Text(c, batchLabel).FontSize(11).TextColor(pal.TextSecondary)
+										ui.Text(c, batchLabel).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
 										ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.TextMuted)
 									})
 								}
@@ -911,7 +916,7 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 				ui.Row(c).Justify(ui.End).Children(func() {
 					confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).Background(pal.Accent).AlignItems(ui.Center)
 					confirmBtn.Children(func() {
-						ui.Text(c, btnText).FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
+						ui.Text(c, btnText).FontSize(12).Bold().TextColor(ui.Hex("#ffffff")).SingleLine()
 					})
 					if confirmBtn.Clicked() {
 						app.submitCandidate()
