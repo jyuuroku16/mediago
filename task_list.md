@@ -1,0 +1,58 @@
+# MediaGo 任务清单与实施进度
+
+- [x] **任务一：项目初始化与基础设施**
+  - [x] 创建 `/Users/wuzhiying/Personal/MediaGo` 目录并初始化 Go 模块
+  - [x] 引入 `github.com/egoist/mygo` 及纯 Go SQLite 依赖
+  - [x] 实现 `testmedia` 本地确定性测试服务（模拟 Range, 429, HLS m3u8 等）
+  - [x] 实现 SQLite 数据持久化层（WAL 模式、Schema 迁移、Task/Asset Repository）
+- [x] **任务二：核心下载引擎与并发调度**
+  - [x] 实现 HTTP Range 分段下载引擎与分段位图持久化（支持断点续传、EWMA 测速）
+  - [x] 实现 HLS 流媒体引擎（解析 m3u8，并发下载分片，受控调用 ffmpeg 合并）
+  - [x] 实现 ExtractorWorker 引擎（受控子进程 + ffmpeg 音视频流自动 mux 合并，支持 B站等 DASH 站点）
+  - [x] 实现两级并发调度器（活跃任务数与连接数限制、单域名防限流、状态机）
+  - [x] 编写自动化单元测试并通过本地测试桩完整验证
+- [x] **任务三：媒体发现与浏览器嗅探**
+  - [x] 实现 URLNormalizer 与受控 yt-dlp 适配器
+  - [x] 实现清晰度梯度智能聚合（自动提炼 1080P/720P/480P/360P/音频，彻底消除重复选项）
+  - [x] 实现专用 WKWebView 浏览器窗口（配置现代桌面 Chrome UA，解决站点版本过低拦截）
+  - [x] 实现 DOM 媒体嗅探与视频播放页深度感知，自动推送候选
+- [x] **任务四：MyGo Native UI 界面与资源库（全面重构 - Apple HIG & godiff 风格）**
+  - [x] 配置 `TitleBarStyle: TitleBarHiddenInset` 与 `Vibrancy: VibrancySidebar` 毛玻璃
+  - [x] 实现全窗口拉伸布局（AlignItems Stretch，消除纯黑边框），左侧侧栏透明以透出磨砂玻璃
+  - [x] 实现纯矢量 Lucide SVG 图标系统与动态调色板
+  - [x] 任务卡片增加 `HD-MUX` 标识与自适应进度条
+  - [x] 弹窗清晰度选择按每行 3 项自适应多行排布，彻底杜绝横向溢出
+  - [x] 支持原生全局快捷键（`⌘N`、`⌘B`、`Esc`、回车键确认）
+- [x] **任务五：系统集成、macOS .app 打包与 Git 提交**
+  - [x] 12 项自动化测试（含真实网络 MDN MP4 下载与 B站/YouTube 真实解析）100% 通过
+  - [x] 构建独立的 `MediaGo.app` bundle，通过 codesign 签名验证并正常启动
+  - [x] 本地 Git 仓库分 15 个模块化 commit 规范管理
+- [x] **任务六：系统菜单栏与偏好设置功能补全**
+  - [x] 实现 macOS 原生菜单栏（`cmd/mediago/menu.go`：包含 MediaGo App 菜单、Settings ⌘,、File ⌘N/⌘B、Edit、View、Window 等原生菜单项）
+  - [x] 实现偏好设置模态弹窗（`internal/ui/app.go`：支持并发任务数 1~8 动态调节、默认保存目录 Finder 定位、快捷键速查指南、引擎就绪状态指示）
+  - [x] 调度器 `Scheduler` 增加 `SetMaxActiveTasks` / `MaxActiveTasks` 动态生效接口
+  - [x] 侧边栏左下角增加常驻“偏好设置 ⌘,”入口与精致齿轮图标
+  - [x] 修复 `.gitignore` 对 `cmd/mediago` 二进制误过滤问题并完成对应 Git 阶段性提交
+- [x] **任务七：Bilibili 分 P 选集检测与批量下载（对标 BBDown 与 Downie）**
+  - [x] 深度调研 B 站底层分集接口（`x/player/pagelist` 与 `x/web-interface/view`），实现免登录态快速提取分集列表
+  - [x] 实现 `internal/discovery/bilibili.go`：自动提取 BVID 与当前分集 P 序号，毫秒级拉取全部分集列表（序号、分集标题、时长、独立 URL）
+  - [x] 增强模型层 `internal/model/model.go`：支持 `Episode` 分集定义与候选实体挂载
+  - [x] 清理多集系列视频标题后缀（从 `... p05 第五課` 智能提取为整洁的剧集主标题）
+  - [x] 优化 UI 模态框交互：展示多集选集胶囊，支持“仅下载当前集 (P5)”与“批量下载全部 41集”即时切换
+  - [x] 调度器批量任务入库支持：选择全选时自动为 41 集生成专属清晰命名的下载任务并入库受控并发下载
+  - [x] 编写 `bilibili_episodes_test.go` 端到端集成测试并通过全部 13 项自动化测试
+  - [x] 重新构建并签名打包 `MediaGo.app` 交付物，完成 2 个阶段的模块化 Git 提交
+- [x] **任务八：全面对齐 egoist/godiff 与 gorex 官方设置架构与原生规范**
+  - [x] 检视 `godiff`（`config.go`、`menu.go`、`palette.go`）与 `gorex`（`settings.go`）官方代码
+  - [x] 建立独立配置管理层 `internal/config/config.go`：支持 `~/.mediago/mediago.jsonc` 规范持久化、`stripJSONC` 注释过滤、`Get`/`Update`/`OnChange` 响应式状态管理
+  - [x] 菜单栏原生对齐：View 菜单集成原生 `MenuItemRadio`（并发数与主题切换），支持 `syncAppMenu` 状态双向同步与 `mygo.Dialog.Open` 系统文件夹选择
+  - [x] 全面废弃手拼绝对定位遮罩，全面改用 MyGo 官方原生的 `ui.Modal` 与 `ui.Field` 规范
+  - [x] 偏好设置面板原生升级：外观主题切换（`mygo.Theme.SetSource` 动态响应）、最大并发数动态调节、保存目录原生弹窗更改与 Finder 定位
+  - [x] 新增完全对标 `godiff/palette.go` 的双列网格胶囊键盘快捷键速查面板（`⌘/`）
+  - [x] 全量 14 项自动化测试 100% 通过，重新打包签名可直接运行的 `MediaGo.app`，分步完成 Git 提交
+- [x] **任务九：对标 Raycast 分栏设置与 Chrome 顶栏浏览器全面重构**
+  - [x] **子任务 9.1**：主页左下角重构为水平并排的纯图标按钮组（左侧设置纯齿轮图标，右侧浏览器纯地球图标，统一尺寸与颜色背景）
+  - [x] **子任务 9.2**：实现 Raycast 风格 Launcher 搜索栏弹窗（支持直接键入任意网址或搜索词、提供常用视频站点快捷直达标签、回车才启动浏览器）
+  - [x] **子任务 9.3**：实现专用浏览器 Chrome 风格顶部导航地址栏（Omnibox 悬浮条，包含后退、前进、刷新、实时地址输入回车跳转、媒体嗅探动态指示）
+  - [x] **子任务 9.4**：重构偏好设置窗口为现代 Raycast / macOS 双分栏设置视窗（左侧边栏 5 大分类导航 + 右侧模块化卡片面板，彻底去除多余的完成按钮，支持即改即存）
+  - [x] **子任务 9.5**：全流程测试验证、截屏自检与 Git 模块化提交
