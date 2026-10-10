@@ -66,9 +66,10 @@ func (m *Manager) Open(initialURL string) {
 		Height:        760,
 		MinWidth:      840,
 		MinHeight:     520,
-		TitleBarStyle: mygo.TitleBarHiddenInset,
-		TitleBarHeight: 44,
-		Vibrancy:      mygo.VibrancySidebar,
+		TitleBarStyle:        mygo.TitleBarHiddenInset,
+		TitleBarHeight:       44,
+		Vibrancy:             mygo.VibrancySidebar,
+		BackgroundColor:      "#1c1c20",
 		TrafficLightPosition: &mygo.Point{X: 16, Y: 14},
 		StateKey:      "mediago_browser_window",
 		Page: mygo.PageOptions{
@@ -147,9 +148,9 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				styleEl = document.createElement('style');
 				styleEl.id = 'mediago-gorex-styles';
 				styleEl.innerHTML = ` + "`" + `
-					/* 页面主体包裹为 Gorex 风格悬浮圆角模糊容器 */
+					/* 页面主体包裹为 Gorex 风格悬浮圆角模糊容器 (深色底板统一) */
 					html {
-						background: transparent !important;
+						background: #1c1c20 !important;
 						height: 100% !important;
 						overflow: hidden !important;
 					}
@@ -158,10 +159,11 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						height: calc(100% - 52px) !important;
 						box-sizing: border-box !important;
 						border-radius: 12px !important;
-						border: 1px solid rgba(255, 255, 255, 0.08) !important;
-						box-shadow: 0 4px 24px rgba(0, 0, 0, 0.28) !important;
+						border: 1px solid rgba(255, 255, 255, 0.12) !important;
+						box-shadow: 0 4px 28px rgba(0, 0, 0, 0.55) !important;
 						overflow: auto !important;
 						position: relative !important;
+						background: #ffffff !important;
 					}
 
 					/* 顶栏: 类似 gorex titleBar (高度 44px, 交通灯避让 78px, 磨砂背景) */
@@ -201,18 +203,19 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						flex-shrink: 0;
 					}
 					.mg-icon-btn {
-						width: 26px;
-						height: 26px;
+						width: 28px;
+						height: 28px;
 						border-radius: 7px;
 						border: none;
 						background: transparent;
-						color: rgba(255, 255, 255, 0.65);
+						color: rgba(255, 255, 255, 0.7);
 						display: flex;
 						align-items: center;
 						justify-content: center;
 						cursor: pointer;
 						transition: all 0.15s ease;
-						font-size: 13px;
+						font-size: 17px;
+						font-weight: 500;
 					}
 					.mg-icon-btn:hover {
 						background: rgba(255, 255, 255, 0.12);
@@ -242,7 +245,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06) !important;
 					}
 
-					/* 输入框文字渐进模糊遮罩: 两侧渐变淡出，无生硬截断 */
+					/* 输入框文字渐进模糊遮罩: 左侧清晰锐利，仅右侧显示不全时渐变淡出 */
 					.mg-omnibox-input {
 						flex: 1;
 						background: transparent;
@@ -252,18 +255,18 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						font-size: 12px;
 						font-family: inherit;
 						width: 100%;
-						-webkit-mask-image: linear-gradient(to right, transparent 0px, black 14px, black calc(100% - 14px), transparent 100%);
-						mask-image: linear-gradient(to right, transparent 0px, black 14px, black calc(100% - 14px), transparent 100%);
+						-webkit-mask-image: linear-gradient(to right, black calc(100% - 22px), transparent 100%);
+						mask-image: linear-gradient(to right, black calc(100% - 22px), transparent 100%);
 					}
 
-					/* Gorex 风格多标签栏轨道 (Tab Track) */
+					/* Gorex 风格多标签栏轨道 (内外圆角同心切合: 16px = 14px + 2px) */
 					.mg-tab-strip {
 						flex: 1;
 						display: flex;
 						align-items: center;
 						gap: 4px;
 						height: 32px;
-						padding: 2px 4px;
+						padding: 2px !important;
 						border-radius: 16px;
 						background: rgba(255, 255, 255, 0.04);
 						border: 0.5px solid rgba(255, 255, 255, 0.06);
@@ -277,11 +280,11 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 
 					/* 单个标签页胶囊 (Tab Item) */
 					.mg-tab-item {
-						height: 26px;
+						height: 28px;
 						min-width: 110px;
 						max-width: 190px;
 						padding: 0 8px 0 10px;
-						border-radius: 13px;
+						border-radius: 14px;
 						display: flex;
 						align-items: center;
 						gap: 6px;

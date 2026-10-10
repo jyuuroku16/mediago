@@ -138,7 +138,7 @@ func NewAppUI(
 		browserMgr:          bm,
 		library:             lib,
 		extractor:           discovery.NewYtDlpExtractor(),
-		currentTab:          "downloading",
+		currentTab:          "all",
 		showModal:           false,
 		selectedFormat:      0,
 		downloadAllEpisodes: false,
@@ -313,11 +313,11 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			}
 			app.mu.RUnlock()
 
+			app.renderSidebarItem(c, "all", "全部任务", iconList, 0, pal)
 			app.renderSidebarItem(c, "downloading", "下载中", iconDownload, activeCount, pal)
 			app.renderSidebarItem(c, "completed", "已完成", iconCheckCircle, 0, pal)
 			app.renderSidebarItem(c, "paused", "已暂停", iconPause, 0, pal)
 			app.renderSidebarItem(c, "failed", "下载失败", iconAlertCircle, 0, pal)
-			app.renderSidebarItem(c, "all", "全部任务", iconList, 0, pal)
 
 			ui.Box(c).Height(12)
 
