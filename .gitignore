@@ -1,6 +1,7 @@
 # Binaries and Apps
 MediaGo.app/
-mediago
+/mediago
+cmd/mediago/mediago
 *.o
 *.a
 *.so
