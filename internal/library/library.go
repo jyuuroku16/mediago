@@ -56,12 +56,12 @@ func (l *Library) OpenInFinder(filePath string) error {
 	return exec.Command("open", "-R", filePath).Run()
 }
 
-// QuickLook 使用 macOS Quick Look 预览选定文件
+// QuickLook 使用 macOS 系统原生播放器打开媒体 (不调用 qlmanage 调试工具)
 func (l *Library) QuickLook(filePath string) error {
 	if _, err := os.Stat(filePath); err != nil {
 		return err
 	}
-	return exec.Command("qlmanage", "-p", filePath).Start()
+	return exec.Command("open", filePath).Start()
 }
 
 // MoveToTrash 将文件安全移动到 macOS 废纸篓

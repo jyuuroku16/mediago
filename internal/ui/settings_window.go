@@ -161,53 +161,94 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 		ui.Box(c).Width(1).Shrink(0).Background(pal.CardBorder)
 
 		// =====================================
-		// 2. 右侧大方舒展的设置详情区 (顶格贴顶，向左突出更饱满)
+		// 2. 右侧大方舒展的设置详情区 (顶格贴顶，模拟原生设置)
 		// =====================================
 		ui.Scroll(c).Vertical().Fill().Children(func() {
-			ui.Column(c).Padding(32, 16, 24, 16).Fill().Gap(16).Children(func() {
-			// 顶部大标题 (纯中文，无自绘关闭按钮，窗口左上角由 macOS 原生控制)
-			titleText := "通用"
-			switch sw.activeTab {
-			case "downloader":
-				titleText = "下载"
-			case "storage":
-				titleText = "存储"
-			case "about":
-				titleText = "关于"
-			}
-			ui.Text(c, titleText).FontSize(20).Bold().TextColor(pal.TextPrimary)
+			ui.Column(c).Padding(30, 20, 24, 20).Fill().Gap(20).Children(func() {
+				// 顶部标题 (对标原生: 15px 加粗紧凑)
+				titleText := "通用"
+				switch sw.activeTab {
+				case "downloader":
+					titleText = "下载"
+				case "storage":
+					titleText = "存储"
+				case "about":
+					titleText = "关于"
+				}
+				ui.Text(c, titleText).FontSize(15).Bold().TextColor(pal.TextPrimary)
 
-			// 分页面渲染
-			switch sw.activeTab {
-			case "general":
-				sw.renderGeneralTab(c, pal, cfg, s)
-			case "downloader":
-				sw.renderDownloaderTab(c, pal, cfg, s)
-			case "storage":
-				sw.renderStorageTab(c, pal, cfg, s)
-			case "about":
-				sw.renderAboutTab(c, pal, cfg, s)
-			default:
-				sw.renderGeneralTab(c, pal, cfg, s)
-			}
+				// 分页面渲染
+				switch sw.activeTab {
+				case "general":
+					sw.renderGeneralTab(c, theme, pal, cfg, s)
+				case "downloader":
+					sw.renderDownloaderTab(c, theme, pal, cfg, s)
+				case "storage":
+					sw.renderStorageTab(c, theme, pal, cfg, s)
+				case "about":
+					sw.renderAboutTab(c, theme, pal, cfg, s)
+				default:
+					sw.renderGeneralTab(c, theme, pal, cfg, s)
+				}
+			})
 		})
 	})
-})
+}
+
+// cardBg 原生无边框半透明底板
+func (sw *SettingsWindow) cardBg(theme *ui.Theme) ui.Color {
+	if theme != nil && !theme.Dark {
+		return ui.RGBA(0, 0, 0, 0.04)
+	}
+	return ui.RGBA(255, 255, 255, 0.05)
+}
+
+// cardSep 卡片内细腻水平分割线
+func (sw *SettingsWindow) cardSep(theme *ui.Theme) ui.Color {
+	if theme != nil && !theme.Dark {
+		return ui.RGBA(0, 0, 0, 0.04)
+	}
+	return ui.RGBA(255, 255, 255, 0.04)
+}
+
+// renderToggle 原生 macOS 规范紧凑开关 (38x22)
+func (sw *SettingsWindow) renderToggle(c *ui.Context, theme *ui.Theme, pal Palette, checked bool, onToggle func()) {
+	bg := ui.RGBA(255, 255, 255, 0.16)
+	if theme != nil && !theme.Dark {
+		bg = ui.RGBA(0, 0, 0, 0.14)
+	}
+	if checked {
+		bg = pal.Accent
+	}
+	btn := ui.Row(c).Size(38, 22).Radius(11).Background(bg).Padding(2, 2).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if checked {
+		btn.Justify(ui.End)
+	} else {
+		btn.Justify(ui.Start)
+	}
+	btn.Children(func() {
+		ui.Box(c).Size(18, 18).Radius(9).Background(ui.Hex("#ffffff"))
+	})
+	if btn.Clicked() {
+		onToggle()
+	}
 }
 
 // renderGeneralTab 渲染通用设置 (外观、通知、常规)
-func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Fill().Gap(18).Children(func() {
-		// 外观分组
-		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "外观").FontSize(13).Bold().TextColor(pal.TextMuted)
+func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, theme *ui.Theme, pal Palette, cfg *config.Config, s config.Settings) {
+	cardBg := sw.cardBg(theme)
+	sepColor := sw.cardSep(theme)
 
-			card := ui.Row(c).Fill().Padding(12, 16).Radius(10).Background(pal.SidebarBg).
-				BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+	ui.Column(c).Fill().Gap(20).Children(func() {
+		// 外观分组 (无边框磨砂卡片，Section 名置于卡片上方)
+		ui.Column(c).Fill().Gap(8).Children(func() {
+			ui.Text(c, "界面外观").FontSize(13).Bold().TextColor(pal.TextPrimary)
+
+			card := ui.Row(c).Fill().Padding(10, 16).Radius(10).Background(cardBg).AlignItems(ui.Center)
 			card.Children(func() {
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
 					ui.Text(c, "界面色彩外观").FontSize(13).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "跟随系统偏好或指定浅色、深色模式").FontSize(12).TextColor(pal.TextSecondary)
+					ui.Text(c, "跟随系统偏好或指定浅色、深色模式").FontSize(11).TextColor(pal.TextSecondary)
 				})
 
 				themeOpt := "跟随系统"
@@ -217,7 +258,7 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 				case "dark":
 					themeOpt = "深色模式"
 				}
-				themeSel := ui.Select(c, &themeOpt, []string{"跟随系统", "浅色模式", "深色模式"}).Width(130)
+				themeSel := ui.Select(c, &themeOpt, []string{"跟随系统", "浅色模式", "深色模式"}).Width(120)
 				if themeSel.Changed() {
 					newT := "system"
 					switch themeOpt {
@@ -231,61 +272,38 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 			})
 		})
 
-		// 行为与交互分组
+		// 通知与行为分组
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "通知与行为").FontSize(13).Bold().TextColor(pal.TextMuted)
+			ui.Text(c, "通知与行为").FontSize(13).Bold().TextColor(pal.TextPrimary)
 
-			groupCard := ui.Column(c).Fill().Radius(10).Background(pal.SidebarBg).
-				BorderWidth(1).BorderColor(pal.CardBorder)
+			groupCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			groupCard.Children(func() {
 				// 行 1: 通知开关
-				r1 := ui.Row(c).Fill().Padding(12, 16).AlignItems(ui.Center)
+				r1 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "任务完成通知").FontSize(13).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, "视频下载或转码完成时显示系统通知").FontSize(12).TextColor(pal.TextSecondary)
+						ui.Text(c, "视频下载或转码完成时显示系统通知").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
-					swBg := pal.CardBorder
-					if s.Notifications {
-						swBg = pal.Accent
-					}
-					swBtn := ui.Row(c).Size(40, 22).Radius(11).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-					if s.Notifications {
-						swBtn.Justify(ui.End)
-					}
-					swBtn.Children(func() {
-						ui.Box(c).Size(18, 18).Radius(9).Background(ui.Hex("#ffffff"))
-					})
-					if swBtn.Clicked() {
+					sw.renderToggle(c, theme, pal, s.Notifications, func() {
 						cfg.Update(func(st *config.Settings) { st.Notifications = !st.Notifications })
-					}
+					})
 				})
 
-				ui.Box(c).Height(1).Fill().Background(pal.CardBorder)
+				ui.Box(c).Height(1).Fill().Background(sepColor)
 
 				// 行 2: 自动开始开关
-				r2 := ui.Row(c).Width(443).Padding(12, 16).AlignItems(ui.Center)
+				r2 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r2.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "自动开始新加入的任务").FontSize(13).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, "解析确认后任务立即加入并发调度并开始下载").FontSize(12).TextColor(pal.TextSecondary)
+						ui.Text(c, "解析确认后任务立即加入并发调度并开始下载").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
-					swBg := pal.CardBorder
-					if s.AutoStart {
-						swBg = pal.Accent
-					}
-					swBtn := ui.Row(c).Size(40, 22).Radius(11).Background(swBg).Padding(2, 2).AlignItems(ui.Center)
-					if s.AutoStart {
-						swBtn.Justify(ui.End)
-					}
-					swBtn.Children(func() {
-						ui.Box(c).Size(18, 18).Radius(9).Background(ui.Hex("#ffffff"))
-					})
-					if swBtn.Clicked() {
+					sw.renderToggle(c, theme, pal, s.AutoStart, func() {
 						cfg.Update(func(st *config.Settings) { st.AutoStart = !st.AutoStart })
-					}
+					})
 				})
 			})
 		})
@@ -293,25 +311,27 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 }
 
 // renderDownloaderTab 渲染下载设置
-func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Fill().Gap(18).Children(func() {
+func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, theme *ui.Theme, pal Palette, cfg *config.Config, s config.Settings) {
+	cardBg := sw.cardBg(theme)
+	sepColor := sw.cardSep(theme)
+
+	ui.Column(c).Fill().Gap(20).Children(func() {
 		// 并发控制
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "调度控制").FontSize(13).Bold().TextColor(pal.TextMuted)
+			ui.Text(c, "调度控制").FontSize(13).Bold().TextColor(pal.TextPrimary)
 
-			groupCard := ui.Column(c).Fill().Radius(10).Background(pal.SidebarBg).
-				BorderWidth(1).BorderColor(pal.CardBorder)
+			groupCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			groupCard.Children(func() {
 				// 行 1: 并发数选择 Select
-				r1 := ui.Row(c).Fill().Padding(12, 16).AlignItems(ui.Center)
+				r1 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "最大并发下载任务数").FontSize(13).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, "同时进行下载的任务上限限制").FontSize(12).TextColor(pal.TextSecondary)
+						ui.Text(c, "同时进行下载的任务上限限制").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
 					concurOpt := fmt.Sprintf("%d 个任务", s.MaxConcurrent)
-					concurSel := ui.Select(c, &concurOpt, []string{"1 个任务", "2 个任务", "3 个任务", "4 个任务", "6 个任务"}).Width(130)
+					concurSel := ui.Select(c, &concurOpt, []string{"1 个任务", "2 个任务", "3 个任务", "4 个任务", "6 个任务"}).Width(120)
 					if concurSel.Changed() {
 						var n int
 						fmt.Sscanf(concurOpt, "%d", &n)
@@ -321,14 +341,14 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 					}
 				})
 
-				ui.Box(c).Height(1).Fill().Background(pal.CardBorder)
+				ui.Box(c).Height(1).Fill().Background(sepColor)
 
 				// 行 2: 优先清晰度选择 Select
-				r2 := ui.Row(c).Fill().Padding(12, 16).AlignItems(ui.Center)
+				r2 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r2.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "首选视频画质").FontSize(13).Bold().TextColor(pal.TextPrimary)
-						ui.Text(c, "解析多规格视频时默认优先选择的清晰度").FontSize(12).TextColor(pal.TextSecondary)
+						ui.Text(c, "解析多规格视频时默认优先选择的清晰度").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
 					qualOpt := "1080P 超清"
@@ -338,7 +358,7 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 					case "720p":
 						qualOpt = "720P 高清"
 					}
-					qualSel := ui.Select(c, &qualOpt, []string{"最佳画质", "1080P 超清", "720P 高清"}).Width(130)
+					qualSel := ui.Select(c, &qualOpt, []string{"最佳画质", "1080P 超清", "720P 高清"}).Width(120)
 					if qualSel.Changed() {
 						newQ := "1080p"
 						switch qualOpt {
@@ -356,22 +376,23 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 }
 
 // renderStorageTab 渲染存储目录设置
-func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Fill().Gap(18).Children(func() {
+func (sw *SettingsWindow) renderStorageTab(c *ui.Context, theme *ui.Theme, pal Palette, cfg *config.Config, s config.Settings) {
+	cardBg := sw.cardBg(theme)
+
+	ui.Column(c).Fill().Gap(20).Children(func() {
 		// 存储路径分组
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "默认保存位置").FontSize(13).Bold().TextColor(pal.TextMuted)
+			ui.Text(c, "默认保存位置").FontSize(13).Bold().TextColor(pal.TextPrimary)
 
-			pathCard := ui.Column(c).Fill().Padding(14, 16).Gap(10).Radius(10).
-				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder)
+			pathCard := ui.Column(c).Fill().Padding(12, 16).Gap(10).Radius(10).Background(cardBg)
 			pathCard.Children(func() {
 				ui.Text(c, s.DownloadDir).FontSize(13).Bold().TextColor(pal.TextPrimary)
 
 				ui.Row(c).Gap(8).Children(func() {
-					chooseBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(6).
-						Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+					chooseBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(6).
+						Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 					chooseBtn.Children(func() {
-						ui.Text(c, "更改目录…").FontSize(12).Bold().TextColor(pal.TextPrimary)
+						ui.Text(c, "更改目录…").FontSize(11).Bold().TextColor(pal.TextPrimary)
 					})
 					if chooseBtn.Clicked() {
 						paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
@@ -384,10 +405,10 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *conf
 						}
 					}
 
-					finderBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(6).
-						Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+					finderBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(6).
+						Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 					finderBtn.Children(func() {
-						ui.Text(c, "在访达中显示").FontSize(12).TextColor(pal.TextSecondary)
+						ui.Text(c, "在访达中显示").FontSize(11).TextColor(pal.TextSecondary)
 					})
 					if finderBtn.Clicked() {
 						_ = exec.Command("open", s.DownloadDir).Start()
@@ -398,20 +419,19 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *conf
 
 		// 配置文件管理
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "配置文件").FontSize(13).Bold().TextColor(pal.TextMuted)
+			ui.Text(c, "配置文件").FontSize(13).Bold().TextColor(pal.TextPrimary)
 
-			cfgCard := ui.Row(c).Fill().Padding(12, 16).Radius(10).
-				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+			cfgCard := ui.Row(c).Fill().Padding(12, 16).Radius(10).Background(cardBg).AlignItems(ui.Center)
 			cfgCard.Children(func() {
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
 					ui.Text(c, "本地偏好设置文件").FontSize(13).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "~/.mediago/mediago.jsonc").FontSize(12).TextColor(pal.TextSecondary)
+					ui.Text(c, "~/.mediago/mediago.jsonc").FontSize(11).TextColor(pal.TextSecondary)
 				})
 
-				openBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(6).
-					Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+				openBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(6).
+					Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 				openBtn.Children(func() {
-					ui.Text(c, "在编辑器中打开").FontSize(12).TextColor(pal.TextSecondary)
+					ui.Text(c, "在编辑器中打开").FontSize(11).TextColor(pal.TextSecondary)
 				})
 				if openBtn.Clicked() {
 					home, _ := filepath.Abs(filepath.Join(s.DownloadDir, "..", "..", ".mediago", "mediago.jsonc"))
@@ -423,24 +443,26 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *conf
 }
 
 // renderAboutTab 渲染关于页面
-func (sw *SettingsWindow) renderAboutTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Fill().Gap(18).Children(func() {
+func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Palette, cfg *config.Config, s config.Settings) {
+	cardBg := sw.cardBg(theme)
+	sepColor := sw.cardSep(theme)
+
+	ui.Column(c).Fill().Gap(20).Children(func() {
 		// 关于 MediaGo
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "关于应用").FontSize(13).Bold().TextColor(pal.TextMuted)
+			ui.Text(c, "关于应用").FontSize(13).Bold().TextColor(pal.TextPrimary)
 
-			infoCard := ui.Row(c).Fill().Padding(14, 16).Radius(10).
-				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+			infoCard := ui.Row(c).Fill().Padding(12, 16).Radius(10).Background(cardBg).AlignItems(ui.Center)
 			infoCard.Children(func() {
 				ui.Column(c).Gap(3).Grow(1).Children(func() {
-					ui.Text(c, "MediaGo").FontSize(15).Bold().TextColor(pal.TextPrimary)
-					ui.Text(c, "版本 1.0.0 · 原生高性能流媒体提取与下载工具").FontSize(12).TextColor(pal.TextSecondary)
+					ui.Text(c, "MediaGo").FontSize(14).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "版本 1.0.0 · 原生高性能流媒体提取与下载工具").FontSize(11).TextColor(pal.TextSecondary)
 				})
 
-				ghBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(6).
-					Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+				ghBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(6).
+					Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 				ghBtn.Children(func() {
-					ui.Text(c, "GitHub 主页").FontSize(12).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "GitHub 主页").FontSize(11).Bold().TextColor(pal.TextPrimary)
 				})
 				if ghBtn.Clicked() {
 					_ = exec.Command("open", "https://github.com/egoist/mygo").Start()
@@ -449,28 +471,31 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, pal Palette, cfg *config
 		})
 
 		// 键盘快捷键对照
-		ui.Column(c).Gap(8).Children(func() {
-			ui.Text(c, "常用快捷键").FontSize(13).Bold().TextColor(pal.TextMuted)
+		ui.Column(c).Fill().Gap(8).Children(func() {
+			ui.Text(c, "常用快捷键").FontSize(13).Bold().TextColor(pal.TextPrimary)
 
-			kbCard := ui.Column(c).Width(443).Padding(10, 16).Gap(8).Radius(10).
-				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder)
+			kbCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			kbCard.Children(func() {
 				shortcuts := []struct{ key, desc string }{
 					{"⌘ N", "新建下载任务"},
-					{"⌘ B", "网址启动器"},
+					{"⌘ B", "专用浏览器"},
 					{"⌘ ,", "打开偏好设置"},
 					{"⌘ W", "关闭当前窗口"},
 					{"Esc", "退出对话框 / 启动器"},
 				}
-				for _, sc := range shortcuts {
-					ui.Row(c).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, sc.desc).FontSize(12).TextColor(pal.TextSecondary).Grow(1)
-						badge := ui.Row(c).Height(22).Padding(0, 6).Radius(4).
-							Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+				for idx, sc := range shortcuts {
+					item := sc
+					ui.Row(c).Fill().Height(36).Padding(0, 16).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, item.desc).FontSize(12).TextColor(pal.TextSecondary).Grow(1)
+						badge := ui.Row(c).Height(20).Padding(0, 6).Radius(4).
+							Background(pal.CardBg).AlignItems(ui.Center)
 						badge.Children(func() {
-							ui.Text(c, sc.key).FontSize(11).Bold().TextColor(pal.TextPrimary)
+							ui.Text(c, item.key).FontSize(11).Bold().TextColor(pal.TextPrimary)
 						})
 					})
+					if idx < len(shortcuts)-1 {
+						ui.Box(c).Height(1).Fill().Background(sepColor)
+					}
 				}
 			})
 		})

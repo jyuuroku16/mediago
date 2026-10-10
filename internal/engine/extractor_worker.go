@@ -98,8 +98,19 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	streamIndex := 0 // 0: 视频流 (权重 88%), 1: 音频流 (权重 12%)
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// 侦测流切换与合并阶段
+		if strings.Contains(line, "[download] Destination:") {
+			if streamIndex > 0 || task.Progress > 0.05 {
+				streamIndex++
+			}
+		} else if strings.Contains(line, "[Merger]") || strings.Contains(line, "[ffmpeg]") {
+			task.Progress = 1.0
+			continue
+		}
 
 		// 解析进度
 		if matches := progressRegex.FindStringSubmatch(line); len(matches) >= 6 {
@@ -112,13 +123,26 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 			totalBytes := parseBytesWithUnit(totalNum, totalUnit)
 			speedBytes := parseSpeedWithUnit(speedNum, speedUnit)
 
+			var overallProgress float64
+			if streamIndex == 0 {
+				overallProgress = (pct / 100.0) * 0.88
+			} else {
+				overallProgress = 0.88 + (pct/100.0)*0.12
+			}
+			if overallProgress < task.Progress {
+				overallProgress = task.Progress // 单调不减
+			}
+			if overallProgress > 1.0 {
+				overallProgress = 1.0
+			}
+
 			if totalBytes > 0 {
 				atomic.StoreInt64(&task.TotalBytes, totalBytes)
-				downloaded := int64(float64(totalBytes) * (pct / 100.0))
+				downloaded := int64(float64(totalBytes) * overallProgress)
 				atomic.StoreInt64(&task.DownloadedBytes, downloaded)
 			}
 			atomic.StoreInt64(&task.Speed, speedBytes)
-			task.Progress = pct / 100.0
+			task.Progress = overallProgress
 
 			if opts.OnProgress != nil {
 				opts.OnProgress(task.DownloadedBytes, task.TotalBytes, task.Speed)
@@ -129,12 +153,25 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 			totalUnit := matches[3]
 
 			totalBytes := parseBytesWithUnit(totalNum, totalUnit)
+			var overallProgress float64
+			if streamIndex == 0 {
+				overallProgress = (pct / 100.0) * 0.88
+			} else {
+				overallProgress = 0.88 + (pct/100.0)*0.12
+			}
+			if overallProgress < task.Progress {
+				overallProgress = task.Progress
+			}
+			if overallProgress > 1.0 {
+				overallProgress = 1.0
+			}
+
 			if totalBytes > 0 {
 				atomic.StoreInt64(&task.TotalBytes, totalBytes)
-				downloaded := int64(float64(totalBytes) * (pct / 100.0))
+				downloaded := int64(float64(totalBytes) * overallProgress)
 				atomic.StoreInt64(&task.DownloadedBytes, downloaded)
 			}
-			task.Progress = pct / 100.0
+			task.Progress = overallProgress
 			if opts.OnProgress != nil {
 				opts.OnProgress(task.DownloadedBytes, task.TotalBytes, 0)
 			}

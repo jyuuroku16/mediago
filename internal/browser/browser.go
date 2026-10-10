@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -92,6 +93,42 @@ func (m *Manager) Open(initialURL string) {
 	}
 
 	// 监听页面导航与加载完成，注入 Gorex 风格顶栏与触发独立媒体嗅探
+	page.OnWillNavigate(func(e *mygo.NavigateEvent) {
+		if strings.HasPrefix(e.URL, "mediago-sniff://download") {
+			e.PreventDefault()
+			// 解析 url 与 title 参数
+			raw := strings.TrimPrefix(e.URL, "mediago-sniff://download?")
+			parts := strings.Split(raw, "&")
+			var targetURL, targetTitle string
+			for _, p := range parts {
+				kv := strings.SplitN(p, "=", 2)
+				if len(kv) == 2 {
+					switch kv[0] {
+					case "url":
+						targetURL = kv[1]
+					case "title":
+						targetTitle = kv[1]
+					}
+				}
+			}
+			if targetURL != "" && m.onMediaFound != nil {
+				decURL, _ := url.QueryUnescape(targetURL)
+				decTitle, _ := url.QueryUnescape(targetTitle)
+				if decTitle == "" {
+					decTitle = "网页媒体资源"
+				}
+				cand := &model.Candidate{
+					ID:        fmt.Sprintf("toast-%d", time.Now().UnixNano()),
+					SourceURL: decURL,
+					Title:     decTitle,
+					Author:    "浏览器浮窗下载",
+					CreatedAt: time.Now(),
+				}
+				m.onMediaFound(cand)
+			}
+		}
+	})
+
 	page.OnDidNavigate(func(u string) {
 		go m.injectGorexTopBar(page)
 		go m.sniffPageMedia(page)
@@ -148,25 +185,20 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				styleEl = document.createElement('style');
 				styleEl.id = 'mediago-gorex-styles';
 				styleEl.innerHTML = ` + "`" + `
-					/* 页面主体包裹为 Gorex 风格悬浮圆角模糊容器 (深色底板统一) */
+					/* 页面主体: 移除白色边框与内缩，恢复全屏通透无切边 */
 					html {
-						background: #1c1c20 !important;
 						height: 100% !important;
-						overflow: hidden !important;
 					}
 					body {
-						margin: 44px 8px 8px 8px !important;
-						height: calc(100% - 52px) !important;
+						margin: 0 !important;
+						padding-top: 44px !important;
 						box-sizing: border-box !important;
-						border-radius: 12px !important;
-						border: 1px solid rgba(255, 255, 255, 0.12) !important;
-						box-shadow: 0 4px 28px rgba(0, 0, 0, 0.55) !important;
-						overflow: auto !important;
-						position: relative !important;
-						background: #ffffff !important;
+						border: none !important;
+						border-radius: 0 !important;
+						box-shadow: none !important;
 					}
 
-					/* 顶栏: 类似 gorex titleBar (高度 44px, 交通灯避让 78px, 磨砂背景) */
+					/* 顶栏: 类似 gorex titleBar (高度 44px, 交通灯避让 78px, 均匀毛玻璃磨砂底板) */
 					#mg-chrome-topbar {
 						position: fixed !important;
 						top: 0 !important;
@@ -188,6 +220,49 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif !important;
 					}
 
+					/* 适配系统浅色模式 */
+					@media (prefers-color-scheme: light) {
+						#mg-chrome-topbar {
+							background: rgba(246, 246, 248, 0.88) !important;
+							border-bottom: 0.5px solid rgba(0, 0, 0, 0.08) !important;
+						}
+						.mg-icon-btn, .mg-new-tab-btn {
+							color: rgba(0, 0, 0, 0.65) !important;
+						}
+						.mg-icon-btn:hover, .mg-new-tab-btn:hover {
+							background: rgba(0, 0, 0, 0.08) !important;
+							color: #000000 !important;
+						}
+						.mg-omnibox-wrap {
+							background: rgba(0, 0, 0, 0.05) !important;
+							border-color: rgba(0, 0, 0, 0.1) !important;
+						}
+						.mg-omnibox-wrap:focus-within {
+							background: rgba(0, 0, 0, 0.08) !important;
+							border-color: rgba(0, 0, 0, 0.25) !important;
+							box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.04) !important;
+						}
+						.mg-omnibox-input {
+							color: #1d1d1f !important;
+						}
+						.mg-tab-strip {
+							background: rgba(0, 0, 0, 0.04) !important;
+							border-color: rgba(0, 0, 0, 0.06) !important;
+						}
+						.mg-tab-item {
+							color: rgba(0, 0, 0, 0.65) !important;
+						}
+						.mg-tab-item:hover {
+							background: rgba(0, 0, 0, 0.06) !important;
+							color: #000000 !important;
+						}
+						.mg-tab-item.active {
+							background: rgba(0, 0, 0, 0.12) !important;
+							color: #000000 !important;
+							border-color: rgba(0, 0, 0, 0.15) !important;
+						}
+					}
+
 					/* 顶栏内控件不触发窗口拖拽 */
 					#mg-chrome-topbar button,
 					#mg-chrome-topbar input,
@@ -195,7 +270,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						-webkit-app-region: no-drag !important;
 					}
 
-					/* 导航控制区 (后退/前进/刷新) */
+					/* 导航控制区 (后退/前进) */
 					.mg-nav-actions {
 						display: flex;
 						align-items: center;
@@ -220,6 +295,14 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 					.mg-icon-btn:hover {
 						background: rgba(255, 255, 255, 0.12);
 						color: #ffffff;
+					}
+
+					/* 右上角操作区 (刷新与新建标签) */
+					.mg-right-actions {
+						display: flex;
+						align-items: center;
+						gap: 4px;
+						flex-shrink: 0;
 					}
 
 					/* 输入栏容器: 默认紧凑 (220px), 聚焦时让出 40% 标签栏宽度并平滑展开 */
@@ -355,8 +438,8 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						100% { transform: scale(0.9); opacity: 0.7; }
 					}
 
-					/* 新建标签按钮 (+) */
-					.mg-new-tab-btn {
+					/* 新建标签按钮 (+) 与刷新按钮通用样式 */
+					.mg-new-tab-btn, .mg-reload-btn {
 						width: 28px;
 						height: 28px;
 						border-radius: 8px;
@@ -367,14 +450,52 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						align-items: center;
 						justify-content: center;
 						cursor: pointer;
-						font-size: 16px;
-						font-weight: 300;
 						transition: all 0.15s ease;
 						flex-shrink: 0;
 					}
-					.mg-new-tab-btn:hover {
+					.mg-new-tab-btn:hover, .mg-reload-btn:hover {
 						background: rgba(255, 255, 255, 0.12);
 						color: #ffffff;
+					}
+
+					/* 浏览器右下角浮动媒体嗅探卡片 (Toast Modal) */
+					#mg-sniff-toast-card {
+						position: fixed !important;
+						bottom: 24px !important;
+						right: 24px !important;
+						width: 330px !important;
+						padding: 14px 16px !important;
+						border-radius: 12px !important;
+						background: rgba(28, 28, 32, 0.88) !important;
+						backdrop-filter: blur(28px) saturate(190%) !important;
+						-webkit-backdrop-filter: blur(28px) saturate(190%) !important;
+						border: 0.5px solid rgba(255, 255, 255, 0.16) !important;
+						box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5) !important;
+						z-index: 2147483647 !important;
+						box-sizing: border-box !important;
+						font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif !important;
+						display: flex !important;
+						flex-direction: column !important;
+						gap: 10px !important;
+						animation: mgToastIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+						user-select: none !important;
+					}
+					@keyframes mgToastIn {
+						from { opacity: 0; transform: translateY(16px) scale(0.96); }
+						to { opacity: 1; transform: translateY(0) scale(1); }
+					}
+					@media (prefers-color-scheme: light) {
+						#mg-sniff-toast-card {
+							background: rgba(255, 255, 255, 0.94) !important;
+							border: 0.5px solid rgba(0, 0, 0, 0.12) !important;
+							box-shadow: 0 10px 32px rgba(0, 0, 0, 0.16) !important;
+						}
+						#mg-sniff-toast-card .mg-toast-title {
+							color: #1d1d1f !important;
+						}
+						#mg-sniff-toast-card .mg-toast-body {
+							color: #3a3a3c !important;
+						}
 					}
 				` + "`" + `;
 				document.documentElement.appendChild(styleEl);
@@ -405,7 +526,6 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				<div class="mg-nav-actions">
 					<button class="mg-icon-btn mg-interactive" id="mg-nav-back" title="后退">‹</button>
 					<button class="mg-icon-btn mg-interactive" id="mg-nav-forward" title="前进">›</button>
-					<button class="mg-icon-btn mg-interactive" id="mg-nav-reload" title="刷新">↻</button>
 				</div>
 				<div class="mg-omnibox-wrap mg-interactive">
 					<span style="font-size:11px;opacity:0.55;">🔒</span>
@@ -414,7 +534,19 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				<div class="mg-tab-strip">
 					${tabsHTML}
 				</div>
-				<button class="mg-new-tab-btn mg-interactive" id="mg-new-tab" title="新建标签页 (+)">+</button>
+				<div class="mg-right-actions">
+					<button class="mg-reload-btn mg-interactive" id="mg-nav-reload" title="刷新页面">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+						</svg>
+					</button>
+					<button class="mg-new-tab-btn mg-interactive" id="mg-new-tab" title="新建标签页 (+)">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+							<line x1="12" y1="5" x2="12" y2="19"></line>
+							<line x1="5" y1="12" x2="19" y2="12"></line>
+						</svg>
+					</button>
+				</div>
 			` + "`" + `;
 
 			// 4. 事件绑定
@@ -628,6 +760,55 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 			} catch (e) {}
 		})()`, mediaFoundCount, mediaFoundCount)
 		_, _ = page.Eval(updateBadgeScript)
+
+		// 浏览器右下角浮动下载 Modal Toast (需求 10)
+		cleanTitle := res.Title
+		if cleanTitle == "" {
+			cleanTitle = "网页媒体资源"
+		}
+		escapedTitle := strings.ReplaceAll(cleanTitle, `\`, `\\`)
+		escapedTitle = strings.ReplaceAll(escapedTitle, `"`, `\"`)
+		escapedTitle = strings.ReplaceAll(escapedTitle, "'", `\'`)
+		escapedTitle = strings.ReplaceAll(escapedTitle, "\n", " ")
+		escapedURL := strings.ReplaceAll(res.URL, `\`, `\\`)
+		escapedURL = strings.ReplaceAll(escapedURL, `"`, `\"`)
+		escapedURL = strings.ReplaceAll(escapedURL, "'", `\'`)
+
+		toastScript := fmt.Sprintf(`(() => {
+			try {
+				let toast = document.getElementById('mg-sniff-toast-card');
+				if (!toast) {
+					toast = document.createElement('div');
+					toast.id = 'mg-sniff-toast-card';
+					document.documentElement.appendChild(toast);
+				}
+				toast.innerHTML = ` + "`" + `
+					<div style="display:flex;align-items:center;justify-content:space-between;">
+						<div style="display:flex;align-items:center;gap:6px;">
+							<div class="mg-pulse-dot"></div>
+							<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">发现可下载媒体</span>
+						</div>
+						<button id="mg-sniff-close" style="border:none;background:transparent;color:rgba(255,255,255,0.45);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;">✕</button>
+					</div>
+					<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">%s</div>
+					<div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;">
+						<span style="font-size:10px;color:rgba(255,255,255,0.5);">检测到 %d 个媒体资源</span>
+						<div style="display:flex;align-items:center;gap:8px;">
+							<button id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>
+							<button id="mg-sniff-download-btn" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">立即下载</button>
+						</div>
+					</div>
+				` + "`" + `;
+				toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+				toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
+				toast.querySelector('#mg-sniff-download-btn').onclick = () => {
+					window.location.href = 'mediago-sniff://download?url=' + encodeURIComponent('%s') + '&title=' + encodeURIComponent('%s');
+					toast.innerHTML = '<div style="font-size:12px;color:#34c759;font-weight:600;padding:8px 0;text-align:center;">✓ 已发送至下载中心并开始解析</div>';
+					setTimeout(() => { if (toast) toast.remove(); }, 2200);
+				};
+			} catch (e) {}
+		})()`, escapedTitle, mediaFoundCount, escapedURL, escapedTitle)
+		_, _ = page.Eval(toastScript)
 	}
 
 	if len(res.Media) == 0 {

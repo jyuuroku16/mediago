@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,8 @@ type AppUI struct {
 
 	// 分集下载控制 (B站多P等)
 	downloadAllEpisodes bool
+	showEpisodesModal   bool
+	selectedEpisodesMap map[int]bool
 
 	// 浏览器 Raycast 风格 Launcher 启动器状态
 	showBrowserLauncher bool
@@ -142,6 +145,7 @@ func NewAppUI(
 		showModal:           false,
 		selectedFormat:      0,
 		downloadAllEpisodes: false,
+		selectedEpisodesMap: make(map[int]bool),
 		sidebarShown:        true,
 		settingsWin:         NewSettingsWindow(),
 	}
@@ -258,6 +262,9 @@ func (app *AppUI) View(c *ui.Context) {
 	// 模态弹窗渲染 (基于 mygo ui.Modal 原生规范)
 	if app.showModal {
 		app.renderModalDialog(c, pal)
+	}
+	if app.showEpisodesModal {
+		app.renderEpisodesModal(c, pal)
 	}
 	if app.showBrowserLauncher {
 		app.renderBrowserLauncherModal(c, pal)
@@ -481,6 +488,18 @@ func (app *AppUI) renderMainContent(c *ui.Context, pal Palette) {
 // renderTaskCard 渲染单个任务卡片
 func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 	card := ui.Column(c).Padding(14, 16).Gap(10).Radius(10).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder)
+	isFileMissing := false
+	if t.Status == model.StatusCompleted {
+		if t.FinalPath == "" {
+			isFileMissing = true
+		} else if _, err := os.Stat(t.FinalPath); err != nil {
+			isFileMissing = true
+		}
+	}
+	if isFileMissing {
+		card.Opacity(0.55)
+	}
+
 	card.Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.03))
 
 	card.Children(func() {
@@ -515,9 +534,15 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 				statusBg = pal.AccentLight
 				statusTc = pal.Accent
 			case model.StatusCompleted:
-				statusText = "已完成"
-				statusBg = pal.SuccessLight
-				statusTc = pal.Success
+				if isFileMissing {
+					statusText = "已失效"
+					statusBg = pal.InputBg
+					statusTc = pal.TextMuted
+				} else {
+					statusText = "已完成"
+					statusBg = pal.SuccessLight
+					statusTc = pal.Success
+				}
 			case model.StatusPaused:
 				statusText = "已暂停"
 				statusBg = pal.WarningLight
@@ -559,6 +584,9 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 		// 3. 底部指标与操作控制行
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			sizeInfo := fmt.Sprintf("%s / %s", formatBytes(t.DownloadedBytes), formatBytes(t.TotalBytes))
+			if isFileMissing {
+				sizeInfo += " · 磁盘文件已被删除"
+			}
 			ui.Text(c, sizeInfo).FontSize(12).TextColor(pal.TextSecondary)
 
 			if t.Status == model.StatusDownloading && t.Speed > 0 {
@@ -590,7 +618,7 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 					}
 				}
 
-				if t.Status == model.StatusCompleted && t.FinalPath != "" {
+				if t.Status == model.StatusCompleted && t.FinalPath != "" && !isFileMissing {
 					finderBtn := ui.Row(c).Height(26).Padding(0, 8).Gap(4).Radius(6).Background(pal.InputBg).AlignItems(ui.Center)
 					finderBtn.Children(func() {
 						ui.Icon(c, iconFolder).FontSize(12).TextColor(pal.TextPrimary)
@@ -602,8 +630,8 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 
 					prevBtn := ui.Row(c).Height(26).Padding(0, 8).Gap(4).Radius(6).Background(pal.InputBg).AlignItems(ui.Center)
 					prevBtn.Children(func() {
-						ui.Icon(c, iconEye).FontSize(12).TextColor(pal.TextPrimary)
-						ui.Text(c, "预览").FontSize(11).TextColor(pal.TextPrimary)
+						ui.Icon(c, iconPlay).FontSize(12).TextColor(pal.TextPrimary)
+						ui.Text(c, "播放").FontSize(11).TextColor(pal.TextPrimary)
 					})
 					if prevBtn.Clicked() {
 						_ = app.library.QuickLook(t.FinalPath)
@@ -642,29 +670,52 @@ func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
 	ui.Scroll(c).Vertical().Fill().Children(func() {
 		ui.Column(c).Padding(16, 20).Gap(10).Children(func() {
 			for _, a := range assets {
+				fileMissing := false
+				if _, err := os.Stat(a.FilePath); err != nil {
+					fileMissing = true
+				}
+
 				card := ui.Row(c).Padding(12, 16).Gap(12).Radius(10).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+				if fileMissing {
+					card.Opacity(0.55)
+				}
 				card.Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.03))
 
 				card.Children(func() {
-					ui.Icon(c, iconFilm).FontSize(24).TextColor(pal.Accent)
+					iconC := pal.Accent
+					if fileMissing {
+						iconC = pal.TextMuted
+					}
+					ui.Icon(c, iconFilm).FontSize(24).TextColor(iconC)
 
 					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-						ui.Text(c, a.Title).FontSize(13).Bold().TextColor(pal.TextPrimary).SingleLine()
+						titleRow := ui.Row(c).Gap(6).AlignItems(ui.Center)
+						titleRow.Children(func() {
+							ui.Text(c, a.Title).FontSize(13).Bold().TextColor(pal.TextPrimary).SingleLine()
+							if fileMissing {
+								ui.Box(c).Padding(1, 6).Radius(4).Background(pal.InputBg).Children(func() {
+									ui.Text(c, "已失效").FontSize(10).TextColor(pal.TextMuted)
+								})
+							}
+						})
 						meta := fmt.Sprintf("%s · %s", formatBytes(a.FileSize), a.FilePath)
+						if fileMissing {
+							meta += " (文件已从磁盘删除)"
+						}
 						ui.Text(c, meta).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
 					})
 
-					ui.Row(c).Gap(6).Children(func() {
-						fBtn := ui.Button(c, "在 Finder 中显示").FontSize(11)
-						if fBtn.Clicked() {
-							_ = app.library.OpenInFinder(a.FilePath)
+					// 媒体资料库纯图标按钮栏 (需求 8)
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						if !fileMissing {
+							if app.iconButton(c, iconPlay, "播放视频").Clicked() {
+								_ = app.library.QuickLook(a.FilePath)
+							}
+							if app.iconButton(c, iconFolder, "在 Finder 中显示").Clicked() {
+								_ = app.library.OpenInFinder(a.FilePath)
+							}
 						}
-						qBtn := ui.Button(c, "预览").FontSize(11)
-						if qBtn.Clicked() {
-							_ = app.library.QuickLook(a.FilePath)
-						}
-						rmBtn := ui.Button(c, "移除记录").FontSize(11)
-						if rmBtn.Clicked() {
+						if app.iconButton(c, iconTrash, "移除记录").Clicked() {
 							_ = app.storage.DeleteAsset(a.ID)
 							app.refreshData()
 						}
@@ -750,9 +801,29 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 								}
 							})
 
+							curPTitle := fmt.Sprintf("P%d", app.candidate.CurrentPage)
+							if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
+								epObj := app.candidate.Episodes[app.candidate.CurrentPage-1]
+								curPTitle = fmt.Sprintf("P%02d %s", epObj.Index, epObj.Title)
+							}
+							if len([]rune(curPTitle)) > 14 {
+								curPTitle = string([]rune(curPTitle)[:12]) + "..."
+							}
+							curLabel := "仅下载: " + curPTitle
+
+							selectedCount := 0
+							for _, ep := range app.candidate.Episodes {
+								if app.selectedEpisodesMap[ep.Index] {
+									selectedCount++
+								}
+							}
+							batchLabel := fmt.Sprintf("批量下载 (已选 %d 集)", selectedCount)
+							if selectedCount == len(app.candidate.Episodes) {
+								batchLabel = fmt.Sprintf("批量下载全部 %d 集", len(app.candidate.Episodes))
+							}
+
 							ui.Row(c).Gap(8).Children(func() {
-								curLabel := fmt.Sprintf("仅下载当前集 (P%d)", app.candidate.CurrentPage)
-								btnCur := ui.Row(c).Height(26).Padding(0, 12).Radius(6).AlignItems(ui.Center)
+								btnCur := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center)
 								if !app.downloadAllEpisodes {
 									btnCur.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
 									btnCur.Children(func() {
@@ -768,21 +839,22 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 									app.downloadAllEpisodes = false
 								}
 
-								allLabel := fmt.Sprintf("批量下载全部 %d 集", len(app.candidate.Episodes))
-								btnAll := ui.Row(c).Height(26).Padding(0, 12).Radius(6).AlignItems(ui.Center)
+								btnAll := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center).Gap(4)
 								if app.downloadAllEpisodes {
 									btnAll.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
 									btnAll.Children(func() {
-										ui.Text(c, allLabel).FontSize(11).Bold().TextColor(pal.Accent)
+										ui.Text(c, batchLabel).FontSize(11).Bold().TextColor(pal.Accent)
+										ui.Text(c, "▾").FontSize(10).TextColor(pal.Accent)
 									})
 								} else {
 									btnAll.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
 									btnAll.Children(func() {
-										ui.Text(c, allLabel).FontSize(11).TextColor(pal.TextSecondary)
+										ui.Text(c, batchLabel).FontSize(11).TextColor(pal.TextSecondary)
+										ui.Text(c, "▾").FontSize(10).TextColor(pal.TextMuted)
 									})
 								}
 								if btnAll.Clicked() {
-									app.downloadAllEpisodes = true
+									app.showEpisodesModal = true
 								}
 							})
 						})
@@ -876,6 +948,12 @@ func (app *AppUI) startExtract() {
 			app.candidate = cand
 			app.selectedFormat = 0
 			app.downloadAllEpisodes = false
+			app.selectedEpisodesMap = make(map[int]bool)
+			if cand != nil {
+				for _, ep := range cand.Episodes {
+					app.selectedEpisodesMap[ep.Index] = true
+				}
+			}
 		}
 		app.mu.Unlock()
 
@@ -905,9 +983,12 @@ func (app *AppUI) submitCandidate() {
 		engineType = model.EngineHLS
 	}
 
-	// 模式 A: 批量下载全部分集
+	// 模式 A: 批量下载选中的分集
 	if len(app.candidate.Episodes) > 1 && app.downloadAllEpisodes {
 		for _, ep := range app.candidate.Episodes {
+			if !app.selectedEpisodesMap[ep.Index] {
+				continue
+			}
 			taskTitle := fmt.Sprintf("%s [P%02d %s]", cleanMainTitle, ep.Index, sanitizeFilename(ep.Title))
 			filename := fmt.Sprintf("%s.%s", sanitizeFilename(taskTitle), fmtObj.Ext)
 			task := &model.Task{
@@ -1150,6 +1231,102 @@ func (app *AppUI) renderShortcutsModal(c *ui.Context, pal Palette) {
 			ui.Row(c).Justify(ui.End).Children(func() {
 				if ui.PrimaryButton(c, "关闭").Clicked() {
 					app.showShortcuts = false
+				}
+			})
+		})
+	})
+}
+
+// renderEpisodesModal 渲染分集多选二级模态弹窗
+func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
+	if app.candidate == nil || len(app.candidate.Episodes) == 0 {
+		return
+	}
+	ui.Modal(c, &app.showEpisodesModal, func() {
+		ui.Column(c).Width(480).Gap(12).Children(func() {
+			// 1. 顶部标题与全选切换
+			selectedCount := 0
+			for _, ep := range app.candidate.Episodes {
+				if app.selectedEpisodesMap[ep.Index] {
+					selectedCount++
+				}
+			}
+			isAllSelected := selectedCount == len(app.candidate.Episodes)
+
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "选择批量下载分集").FontSize(14).Bold().TextColor(pal.TextPrimary)
+				ui.Box(c).Width(8)
+				ui.Text(c, fmt.Sprintf("(已选 %d/%d 集)", selectedCount, len(app.candidate.Episodes))).FontSize(12).TextColor(pal.Accent)
+
+				ui.Spacer(c)
+
+				toggleAllText := "全选"
+				if isAllSelected {
+					toggleAllText = "取消全选"
+				}
+				toggleBtn := ui.Button(c, toggleAllText).FontSize(11)
+				if toggleBtn.Clicked() {
+					newVal := !isAllSelected
+					for _, ep := range app.candidate.Episodes {
+						app.selectedEpisodesMap[ep.Index] = newVal
+					}
+				}
+			})
+
+			// 2. 分集滚动列表
+			ui.Scroll(c).Vertical().Height(260).Background(pal.InputBg).Radius(8).Padding(6).Children(func() {
+				ui.Column(c).Gap(4).Children(func() {
+					for _, ep := range app.candidate.Episodes {
+						e := ep
+						isSel := app.selectedEpisodesMap[e.Index]
+						rowBg := pal.CardBg
+						if isSel {
+							rowBg = pal.AccentLight
+						}
+						r := ui.Row(c).Height(32).Padding(0, 10).Gap(8).Radius(6).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+						r.Children(func() {
+							chkText := "□"
+							chkColor := pal.TextMuted
+							if isSel {
+								chkText = "☑"
+								chkColor = pal.Accent
+							}
+							ui.Text(c, chkText).FontSize(13).Bold().TextColor(chkColor)
+
+							ui.Box(c).Padding(1, 5).Radius(3).Background(pal.InputBg).Children(func() {
+								ui.Text(c, fmt.Sprintf("P%02d", e.Index)).FontSize(10).Bold().TextColor(pal.TextSecondary)
+							})
+
+							titleColor := pal.TextPrimary
+							if isSel {
+								titleColor = pal.Accent
+							}
+							ui.Text(c, e.Title).FontSize(12).TextColor(titleColor).SingleLine().Grow(1).MinWidth(0)
+						})
+
+						if r.Clicked() {
+							app.selectedEpisodesMap[e.Index] = !isSel
+						}
+					}
+				})
+			})
+
+			// 3. 底部确定与取消按钮
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Spacer(c)
+
+				cancelBtn := ui.Button(c, "取消").FontSize(12)
+				if cancelBtn.Clicked() {
+					app.showEpisodesModal = false
+				}
+
+				confirmBtn := ui.Row(c).Height(30).Padding(0, 16).Radius(6).Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				confirmBtn.Children(func() {
+					ui.Text(c, "确定").FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
+				})
+				if confirmBtn.Clicked() {
+					app.downloadAllEpisodes = true
+					app.showEpisodesModal = false
 				}
 			})
 		})
