@@ -158,6 +158,19 @@ func (app *AppUI) View(c *ui.Context) {
 		})
 	})
 
+	// 全局快捷键处理: ⌘N 新建下载, ⌘B 打开浏览器, Esc 关闭弹窗
+	if c.Shortcut(ui.Cmd, ui.KeyN) {
+		app.showModal = true
+		app.modalURL = ""
+		app.candidate = nil
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyB) {
+		app.browserMgr.Open("https://www.bilibili.com")
+	}
+	if app.showModal && c.Shortcut(0, ui.KeyEscape) {
+		app.showModal = false
+	}
+
 	// 4. Spotlight / Raycast 风格的悬浮模态弹窗
 	if app.showModal {
 		app.renderModalDialog(c, pal)
@@ -599,7 +612,15 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 
 			ui.Row(c).Height(38).Padding(0, 10).Gap(8).Radius(8).Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).AlignItems(ui.Center).Children(func() {
 				ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.TextMuted)
-				ui.TextInputBase(c, &app.modalURL).Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
+				in := ui.TextInputBase(c, &app.modalURL).Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
+				if in.Shortcut(0, ui.KeyEnter) {
+					if app.candidate != nil && len(app.candidate.Formats) > 0 {
+						app.submitCandidate()
+						app.showModal = false
+					} else {
+						app.startExtract()
+					}
+				}
 				parseBtn := ui.Button(c, "解析").FontSize(12)
 				if parseBtn.Clicked() {
 					app.startExtract()
