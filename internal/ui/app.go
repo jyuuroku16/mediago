@@ -409,7 +409,11 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 			engLabel := "MP4"
 			engBg := pal.AccentLight
 			engTc := pal.Accent
-			if t.Engine == model.EngineHLS {
+			if t.Engine == model.EngineExtractor {
+				engLabel = "HD-MUX"
+				engBg = pal.SuccessLight
+				engTc = pal.Success
+			} else if t.Engine == model.EngineHLS {
 				engLabel = "HLS"
 				engBg = ui.RGBA(175, 82, 222, 0.15)
 				engTc = ui.Hex("#af52de")
@@ -646,26 +650,37 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 					})
 
 					if len(app.candidate.Formats) > 0 {
-						ui.Text(c, "可选画质与格式:").FontSize(11).TextColor(pal.TextSecondary)
-						ui.Row(c).Gap(6).Children(func() {
-							for idx, f := range app.candidate.Formats {
-								isSel := app.selectedFormat == idx
-								fBg := pal.CardBg
-								fBorder := pal.CardBorder
-								fTc := pal.TextPrimary
-								if isSel {
-									fBg = pal.AccentLight
-									fBorder = pal.Accent
-									fTc = pal.Accent
+						ui.Text(c, "选择清晰度与保存格式:").FontSize(11).Bold().TextColor(pal.TextSecondary)
+						ui.Column(c).Gap(6).Children(func() {
+							for i := 0; i < len(app.candidate.Formats); i += 3 {
+								end := i + 3
+								if end > len(app.candidate.Formats) {
+									end = len(app.candidate.Formats)
 								}
-								fmtBtn := ui.Row(c).Padding(4, 10).Radius(6).Background(fBg).BorderWidth(1).BorderColor(fBorder).AlignItems(ui.Center)
-								fmtLabel := fmt.Sprintf("%s (%s)", f.Resolution, f.Ext)
-								fmtBtn.Children(func() {
-									ui.Text(c, fmtLabel).FontSize(11).Bold().TextColor(fTc)
+								rowSlice := app.candidate.Formats[i:end]
+								startIdx := i
+								ui.Row(c).Gap(8).Children(func() {
+									for j, f := range rowSlice {
+										idx := startIdx + j
+										isSel := app.selectedFormat == idx
+										fBg := pal.CardBg
+										fBorder := pal.CardBorder
+										fTc := pal.TextPrimary
+										if isSel {
+											fBg = pal.AccentLight
+											fBorder = pal.Accent
+											fTc = pal.Accent
+										}
+										fmtBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(7).Background(fBg).BorderWidth(1).BorderColor(fBorder).AlignItems(ui.Center)
+										fmtLabel := fmt.Sprintf("%s (%s)", f.Resolution, strings.ToUpper(f.Ext))
+										fmtBtn.Children(func() {
+											ui.Text(c, fmtLabel).FontSize(11).Bold().TextColor(fTc)
+										})
+										if fmtBtn.Clicked() {
+											app.selectedFormat = idx
+										}
+									}
 								})
-								if fmtBtn.Clicked() {
-									app.selectedFormat = idx
-								}
 							}
 						})
 					}
@@ -739,7 +754,11 @@ func (app *AppUI) submitCandidate() {
 	}
 
 	engineType := model.EngineHTTPRange
-	if fmtObj.Protocol == "m3u8" || strings.HasSuffix(fmtObj.URL, ".m3u8") {
+	downloadURL := fmtObj.URL
+	if fmtObj.Protocol == "extractor" {
+		engineType = model.EngineExtractor
+		downloadURL = fmtObj.FormatID
+	} else if fmtObj.Protocol == "m3u8" || strings.HasSuffix(fmtObj.URL, ".m3u8") {
 		engineType = model.EngineHLS
 	}
 
@@ -748,7 +767,7 @@ func (app *AppUI) submitCandidate() {
 		ID:             uuid.New().String(),
 		Title:          app.candidate.Title,
 		SourceURL:      app.candidate.SourceURL,
-		DownloadURL:    fmtObj.URL,
+		DownloadURL:    downloadURL,
 		Engine:         engineType,
 		Status:         model.StatusQueued,
 		TotalBytes:     fmtObj.Filesize,
