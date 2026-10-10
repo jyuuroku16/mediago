@@ -14,18 +14,32 @@ import (
 
 // Settings 对应应用的持久化偏好设置，参考 egoist/godiff 的设计
 type Settings struct {
-	DownloadDir   string `json:"downloadDir"`   // 下载保存目录
-	MaxConcurrent int    `json:"maxConcurrent"` // 最大活动下载任务数 (1~8)
-	Theme         string `json:"theme"`         // system, light, dark
+	DownloadDir      string `json:"downloadDir"`      // 下载保存目录
+	MaxConcurrent    int    `json:"maxConcurrent"`    // 最大活动下载任务数 (1~8)
+	Theme            string `json:"theme"`            // system, light, dark
+	Notifications    bool   `json:"notifications"`    // 下载完成桌面通知
+	AutoStart        bool   `json:"autoStart"`        // 自动开始新加入的任务
+	InjectedOmnibox  bool   `json:"injectedOmnibox"`  // 专用浏览器启用 Chrome 风格顶部地址栏
+	UserAgentSpoof   bool   `json:"userAgentSpoof"`   // Chrome 131 桌面 UA 伪装防拦截
+	AutoDetectStream bool   `json:"autoDetectStream"` // 播放页深度流媒体感知
+	AutoCategorize   bool   `json:"autoCategorize"`   // 按平台自动分类保存文件夹
+	PreferredQuality string `json:"preferredQuality"` // best, 1080p, 720p
 }
 
 func defaultSettings() Settings {
 	home, _ := os.UserHomeDir()
 	defaultDir := filepath.Join(home, "Movies", "MediaGo")
 	return Settings{
-		DownloadDir:   defaultDir,
-		MaxConcurrent: 3,
-		Theme:         "system",
+		DownloadDir:      defaultDir,
+		MaxConcurrent:    3,
+		Theme:            "system",
+		Notifications:    true,
+		AutoStart:        true,
+		InjectedOmnibox:  true,
+		UserAgentSpoof:   true,
+		AutoDetectStream: true,
+		AutoCategorize:   false,
+		PreferredQuality: "1080p",
 	}
 }
 
@@ -43,6 +57,9 @@ func (s *Settings) normalize() {
 	}
 	if s.Theme != "system" && s.Theme != "light" && s.Theme != "dark" {
 		s.Theme = d.Theme
+	}
+	if s.PreferredQuality != "best" && s.PreferredQuality != "1080p" && s.PreferredQuality != "720p" {
+		s.PreferredQuality = d.PreferredQuality
 	}
 }
 
