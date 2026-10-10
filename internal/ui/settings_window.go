@@ -161,10 +161,10 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 		ui.Box(c).Width(1).Shrink(0).Background(pal.CardBorder)
 
 		// =====================================
-		// 2. 右侧大方舒展的设置详情区 (顶格贴顶，支持纵向滚动)
+		// 2. 右侧大方舒展的设置详情区 (顶格贴顶，向左突出更饱满)
 		// =====================================
 		ui.Scroll(c).Vertical().Fill().Children(func() {
-			ui.Column(c).Padding(36, 28, 24, 28).Gap(16).Children(func() {
+			ui.Column(c).Padding(32, 16, 24, 16).Fill().Gap(16).Children(func() {
 			// 顶部大标题 (纯中文，无自绘关闭按钮，窗口左上角由 macOS 原生控制)
 			titleText := "通用"
 			switch sw.activeTab {
@@ -197,12 +197,12 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 
 // renderGeneralTab 渲染通用设置 (外观、通知、常规)
 func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(18).Children(func() {
+	ui.Column(c).Fill().Gap(18).Children(func() {
 		// 外观分组
-		ui.Column(c).Gap(8).Children(func() {
+		ui.Column(c).Fill().Gap(8).Children(func() {
 			ui.Text(c, "外观").FontSize(13).Bold().TextColor(pal.TextMuted)
 
-			card := ui.Row(c).Width(443).Padding(12, 16).Radius(10).Background(pal.SidebarBg).
+			card := ui.Row(c).Fill().Padding(12, 16).Radius(10).Background(pal.SidebarBg).
 				BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 			card.Children(func() {
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
@@ -232,14 +232,14 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 		})
 
 		// 行为与交互分组
-		ui.Column(c).Gap(8).Children(func() {
+		ui.Column(c).Fill().Gap(8).Children(func() {
 			ui.Text(c, "通知与行为").FontSize(13).Bold().TextColor(pal.TextMuted)
 
-			groupCard := ui.Column(c).Width(443).Radius(10).Background(pal.SidebarBg).
+			groupCard := ui.Column(c).Fill().Radius(10).Background(pal.SidebarBg).
 				BorderWidth(1).BorderColor(pal.CardBorder)
 			groupCard.Children(func() {
 				// 行 1: 通知开关
-				r1 := ui.Row(c).Width(443).Padding(12, 16).AlignItems(ui.Center)
+				r1 := ui.Row(c).Fill().Padding(12, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "任务完成通知").FontSize(13).Bold().TextColor(pal.TextPrimary)
@@ -294,16 +294,16 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, pal Palette, cfg *conf
 
 // renderDownloaderTab 渲染下载设置
 func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(18).Children(func() {
+	ui.Column(c).Fill().Gap(18).Children(func() {
 		// 并发控制
-		ui.Column(c).Gap(8).Children(func() {
+		ui.Column(c).Fill().Gap(8).Children(func() {
 			ui.Text(c, "调度控制").FontSize(13).Bold().TextColor(pal.TextMuted)
 
-			groupCard := ui.Column(c).Width(443).Radius(10).Background(pal.SidebarBg).
+			groupCard := ui.Column(c).Fill().Radius(10).Background(pal.SidebarBg).
 				BorderWidth(1).BorderColor(pal.CardBorder)
 			groupCard.Children(func() {
 				// 行 1: 并发数选择 Select
-				r1 := ui.Row(c).Width(443).Padding(12, 16).AlignItems(ui.Center)
+				r1 := ui.Row(c).Fill().Padding(12, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "最大并发下载任务数").FontSize(13).Bold().TextColor(pal.TextPrimary)
@@ -324,7 +324,7 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 				ui.Box(c).Height(1).Fill().Background(pal.CardBorder)
 
 				// 行 2: 优先清晰度选择 Select
-				r2 := ui.Row(c).Width(443).Padding(12, 16).AlignItems(ui.Center)
+				r2 := ui.Row(c).Fill().Padding(12, 16).AlignItems(ui.Center)
 				r2.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
 						ui.Text(c, "首选视频画质").FontSize(13).Bold().TextColor(pal.TextPrimary)
@@ -357,12 +357,12 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, pal Palette, cfg *c
 
 // renderStorageTab 渲染存储目录设置
 func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(18).Children(func() {
+	ui.Column(c).Fill().Gap(18).Children(func() {
 		// 存储路径分组
-		ui.Column(c).Gap(8).Children(func() {
+		ui.Column(c).Fill().Gap(8).Children(func() {
 			ui.Text(c, "默认保存位置").FontSize(13).Bold().TextColor(pal.TextMuted)
 
-			pathCard := ui.Column(c).Width(443).Padding(14, 16).Gap(10).Radius(10).
+			pathCard := ui.Column(c).Fill().Padding(14, 16).Gap(10).Radius(10).
 				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder)
 			pathCard.Children(func() {
 				ui.Text(c, s.DownloadDir).FontSize(13).Bold().TextColor(pal.TextPrimary)
@@ -397,10 +397,10 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *conf
 		})
 
 		// 配置文件管理
-		ui.Column(c).Gap(8).Children(func() {
+		ui.Column(c).Fill().Gap(8).Children(func() {
 			ui.Text(c, "配置文件").FontSize(13).Bold().TextColor(pal.TextMuted)
 
-			cfgCard := ui.Row(c).Width(443).Padding(12, 16).Radius(10).
+			cfgCard := ui.Row(c).Fill().Padding(12, 16).Radius(10).
 				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 			cfgCard.Children(func() {
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
@@ -424,12 +424,12 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, pal Palette, cfg *conf
 
 // renderAboutTab 渲染关于页面
 func (sw *SettingsWindow) renderAboutTab(c *ui.Context, pal Palette, cfg *config.Config, s config.Settings) {
-	ui.Column(c).Gap(18).Children(func() {
+	ui.Column(c).Fill().Gap(18).Children(func() {
 		// 关于 MediaGo
-		ui.Column(c).Gap(8).Children(func() {
+		ui.Column(c).Fill().Gap(8).Children(func() {
 			ui.Text(c, "关于应用").FontSize(13).Bold().TextColor(pal.TextMuted)
 
-			infoCard := ui.Row(c).Width(443).Padding(14, 16).Radius(10).
+			infoCard := ui.Row(c).Fill().Padding(14, 16).Radius(10).
 				Background(pal.SidebarBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
 			infoCard.Children(func() {
 				ui.Column(c).Gap(3).Grow(1).Children(func() {

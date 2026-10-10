@@ -86,6 +86,17 @@ func getPalette(t *ui.Theme) Palette {
 	if t.Dark {
 		p = darkPalette
 	}
+
+	// 动态跟随 macOS 操作系统 Accent Color (用户在系统设置->外观->强调色中所选)
+	if t != nil && t.Accent.A > 0 {
+		p.Accent = t.Accent
+		if t.Dark {
+			p.AccentLight = t.Accent.Alpha(0.20)
+		} else {
+			p.AccentLight = t.Accent.Alpha(0.12)
+		}
+	}
+
 	if runtime.GOOS != "darwin" {
 		if t.Dark {
 			p.SidebarBg = ui.Hex("#242426")

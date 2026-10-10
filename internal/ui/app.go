@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 	"github.com/google/uuid"
 
@@ -324,7 +325,7 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			app.renderSidebarItem(c, "library", "媒体资料库", iconFilm, 0, pal)
 		})
 
-		// 底部纯图标工具条: 左侧设置纯图标，右侧为新建(+)与浏览器(🌐)并排纯图标
+		// 底部纯图标工具条: 左侧设置纯图标，右侧为浏览器(🌐)与新建(+)并排纯图标
 		ui.Row(c).Height(38).Padding(0, 14).AlignItems(ui.Center).Children(func() {
 			if app.iconButton(c, iconSettings, "偏好设置 (⌘,)").Clicked() {
 				app.OpenSettings()
@@ -333,11 +334,11 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			ui.Spacer(c)
 
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				if app.iconButton(c, iconPlus, "新建下载 (⌘N)").Clicked() {
-					app.OpenNewDownload()
-				}
 				if app.iconButton(c, iconGlobe, "专用浏览器启动器 (⌘B)").Clicked() {
 					app.OpenBrowserLauncher()
+				}
+				if app.iconButton(c, iconPlus, "新建下载 (⌘N)").Clicked() {
+					app.OpenNewDownload()
 				}
 			})
 		})
@@ -382,7 +383,7 @@ func (app *AppUI) renderSidebarItem(c *ui.Context, id, title string, icon *ui.SV
 	}
 }
 
-// renderTopBar 渲染右侧顶部无缝融合的 Toolbar (右上角洁净无冗余按钮)
+// renderTopBar 渲染右侧顶部无缝融合的 Toolbar (隐藏背景与底边框，参考 Pulse 轻盈设计)
 func (app *AppUI) renderTopBar(c *ui.Context, pal Palette) {
 	var totalSpeed int64
 	app.mu.RLock()
@@ -399,7 +400,7 @@ func (app *AppUI) renderTopBar(c *ui.Context, pal Palette) {
 		leftPadding = max(bar.Left+10, 14)
 	}
 
-	ui.Row(c).Height(titleBarHeight).Padding(0, 20, 0, leftPadding).BorderWidth(0, 0, 1, 0).BorderColor(pal.HeaderBorder).Background(pal.HeaderBg).AlignItems(ui.Center).DragWindow().Children(func() {
+	ui.Row(c).Height(titleBarHeight).Padding(0, 20, 0, leftPadding).Background(ui.Transparent).Material(glass.ScrollEdge{}).AlignItems(ui.Center).DragWindow().Children(func() {
 		if !app.sidebarShown {
 			if app.iconButton(c, iconSidebar, "显示侧边栏 (⌘\\)").Clicked() {
 				app.sidebarShown = true
@@ -690,18 +691,29 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 				}
 			})
 
-			ui.Row(c).Height(38).Padding(0, 10).Gap(8).Radius(8).Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).AlignItems(ui.Center).Children(func() {
-				ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.TextMuted)
-				in := ui.TextInputBase(c, &app.modalURL).Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
-				if in.Shortcut(0, ui.KeyEnter) {
-					if app.candidate != nil && len(app.candidate.Formats) > 0 {
-						app.submitCandidate()
-						app.showModal = false
-					} else {
-						app.startExtract()
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				// 输入框容器 (充满剩余宽度)
+				ui.Row(c).Height(38).Padding(0, 12).Gap(8).Radius(8).
+					Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).
+					AlignItems(ui.Center).Grow(1).Children(func() {
+					ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.TextMuted)
+					in := ui.TextInputBase(c, &app.modalURL).Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
+					if in.Submitted() || in.Shortcut(0, ui.KeyEnter) {
+						if app.candidate != nil && len(app.candidate.Formats) > 0 {
+							app.submitCandidate()
+							app.showModal = false
+						} else {
+							app.startExtract()
+						}
 					}
-				}
-				parseBtn := ui.Button(c, "解析").FontSize(12)
+				})
+
+				// 移出到输入框右侧的 Accent 主按钮
+				parseBtn := ui.Row(c).Height(38).Padding(0, 18).Radius(8).
+					Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				parseBtn.Children(func() {
+					ui.Text(c, "解析").FontSize(13).Bold().TextColor(ui.Hex("#ffffff"))
+				})
 				if parseBtn.Clicked() {
 					app.startExtract()
 				}
@@ -1004,7 +1016,7 @@ func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 				in := ui.TextInputBase(c, &app.launcherInput).Placeholder("输入网址或搜索关键词 (回车直达)...").
 					FontSize(13).Grow(1).MinWidth(0)
 				in.Focus()
-				if in.Shortcut(0, ui.KeyEnter) {
+				if in.Submitted() || in.Shortcut(0, ui.KeyEnter) {
 					app.launchBrowserFromInput()
 				}
 
