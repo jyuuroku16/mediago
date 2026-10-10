@@ -14,9 +14,10 @@ type TaskUpdateListener func(task *model.Task)
 
 // Scheduler 两级并发下载调度器
 type Scheduler struct {
-	storage    *storage.Storage
-	httpEngine *HTTPRangeEngine
-	hlsEngine  *HLSEngine
+	storage         *storage.Storage
+	httpEngine      *HTTPRangeEngine
+	hlsEngine       *HLSEngine
+	extractorEngine *ExtractorWorkerEngine
 
 	maxActiveTasks int
 	activeTasks    map[string]context.CancelFunc
@@ -35,14 +36,15 @@ func NewScheduler(s *storage.Storage, maxActive int) *Scheduler {
 		maxActive = 3
 	}
 	return &Scheduler{
-		storage:        s,
-		httpEngine:     NewHTTPRangeEngine(),
-		hlsEngine:      NewHLSEngine(),
-		maxActiveTasks: maxActive,
-		activeTasks:    make(map[string]context.CancelFunc),
-		hostConns:      make(map[string]int),
-		queueChan:      make(chan *model.Task, 100),
-		stopCh:         make(chan struct{}),
+		storage:         s,
+		httpEngine:      NewHTTPRangeEngine(),
+		hlsEngine:       NewHLSEngine(),
+		extractorEngine: NewExtractorWorkerEngine(),
+		maxActiveTasks:  maxActive,
+		activeTasks:     make(map[string]context.CancelFunc),
+		hostConns:       make(map[string]int),
+		queueChan:       make(chan *model.Task, 100),
+		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -183,7 +185,9 @@ func (sc *Scheduler) startTask(task *model.Task) {
 		}
 
 		var err error
-		if task.Engine == model.EngineHLS {
+		if task.Engine == model.EngineExtractor {
+			err = sc.extractorEngine.Download(ctx, task, opts)
+		} else if task.Engine == model.EngineHLS {
 			err = sc.hlsEngine.Download(ctx, task, opts)
 		} else {
 			err = sc.httpEngine.Download(ctx, task, opts)

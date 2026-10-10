@@ -30,6 +30,7 @@ const (
 	EngineHTTPRange EngineType = "http_range"
 	EngineHLS       EngineType = "hls"
 	EngineDirect    EngineType = "direct"
+	EngineExtractor EngineType = "extractor_worker"
 )
 
 // MediaFormat 表示媒体规格（清晰度、编码、格式等）
