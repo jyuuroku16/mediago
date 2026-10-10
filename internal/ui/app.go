@@ -50,6 +50,9 @@ type AppUI struct {
 	candidate      *model.Candidate
 	selectedFormat int
 
+	// 分集下载控制 (B站多P等)
+	downloadAllEpisodes bool
+
 	// 设置弹窗状态
 	showSettingsModal bool
 	concurrentLimit   int
@@ -69,6 +72,7 @@ func (app *AppUI) OpenNewDownload() {
 	app.modalURL = ""
 	app.candidate = nil
 	app.extractError = ""
+	app.downloadAllEpisodes = false
 	if app.window != nil {
 		app.window.Invalidate()
 	}
@@ -688,11 +692,62 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 			}
 
 			if app.candidate != nil {
-				ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(8).Children(func() {
+				ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(10).Children(func() {
 					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 						ui.Icon(c, iconFilm).FontSize(14).TextColor(pal.Accent)
 						ui.Text(c, app.candidate.Title).FontSize(13).Bold().TextColor(pal.TextPrimary).SingleLine().Grow(1).MinWidth(0)
 					})
+
+					// 多集选集区块 (B站等多分集视频)
+					if len(app.candidate.Episodes) > 1 {
+						ui.Column(c).Padding(10, 12).Radius(8).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Gap(8).Children(func() {
+							ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+								ui.Icon(c, iconList).FontSize(13).TextColor(pal.Accent)
+								ui.Text(c, fmt.Sprintf("检测到多集视频 (共 %d 集)", len(app.candidate.Episodes))).FontSize(12).Bold().TextColor(pal.TextPrimary)
+								if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
+									curEp := app.candidate.Episodes[app.candidate.CurrentPage-1]
+									ui.Spacer(c)
+									ui.Text(c, fmt.Sprintf("当前位于: P%d %s", curEp.Index, curEp.Title)).FontSize(11).TextColor(pal.Accent)
+								}
+							})
+
+							ui.Row(c).Gap(8).Children(func() {
+								curLabel := fmt.Sprintf("仅下载当前集 (P%d)", app.candidate.CurrentPage)
+								btnCur := ui.Row(c).Height(26).Padding(0, 12).Radius(6).AlignItems(ui.Center)
+								if !app.downloadAllEpisodes {
+									btnCur.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
+									btnCur.Children(func() {
+										ui.Text(c, curLabel).FontSize(11).Bold().TextColor(pal.Accent)
+									})
+								} else {
+									btnCur.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
+									btnCur.Children(func() {
+										ui.Text(c, curLabel).FontSize(11).TextColor(pal.TextSecondary)
+									})
+								}
+								if btnCur.Clicked() {
+									app.downloadAllEpisodes = false
+								}
+
+								allLabel := fmt.Sprintf("批量下载全部 %d 集", len(app.candidate.Episodes))
+								btnAll := ui.Row(c).Height(26).Padding(0, 12).Radius(6).AlignItems(ui.Center)
+								if app.downloadAllEpisodes {
+									btnAll.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
+									btnAll.Children(func() {
+										ui.Text(c, allLabel).FontSize(11).Bold().TextColor(pal.Accent)
+									})
+								} else {
+									btnAll.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
+									btnAll.Children(func() {
+										ui.Text(c, allLabel).FontSize(11).TextColor(pal.TextSecondary)
+									})
+								}
+								if btnAll.Clicked() {
+									app.downloadAllEpisodes = true
+								}
+							})
+						})
+					}
 
 					if len(app.candidate.Formats) > 0 {
 						ui.Text(c, "选择清晰度与保存格式:").FontSize(11).Bold().TextColor(pal.TextSecondary)
@@ -740,9 +795,17 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 				}
 
 				if app.candidate != nil {
+					btnText := "立即开始下载"
+					if len(app.candidate.Episodes) > 1 {
+						if app.downloadAllEpisodes {
+							btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
+						} else {
+							btnText = fmt.Sprintf("立即下载当前集 (P%d)", app.candidate.CurrentPage)
+						}
+					}
 					confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).Background(pal.Accent).AlignItems(ui.Center)
 					confirmBtn.Children(func() {
-						ui.Text(c, "立即开始下载").FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
+						ui.Text(c, btnText).FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
 					})
 					if confirmBtn.Clicked() {
 						app.submitCandidate()
@@ -778,6 +841,7 @@ func (app *AppUI) startExtract() {
 		} else {
 			app.candidate = cand
 			app.selectedFormat = 0
+			app.downloadAllEpisodes = false
 		}
 		app.mu.Unlock()
 
@@ -793,9 +857,9 @@ func (app *AppUI) submitCandidate() {
 	}
 
 	fmtObj := app.candidate.Formats[app.selectedFormat]
-	cleanTitle := sanitizeFilename(app.candidate.Title)
-	if cleanTitle == "" {
-		cleanTitle = "video_" + time.Now().Format("20060102_150405")
+	cleanMainTitle := sanitizeFilename(app.candidate.Title)
+	if cleanMainTitle == "" {
+		cleanMainTitle = "video_" + time.Now().Format("20060102_150405")
 	}
 
 	engineType := model.EngineHTTPRange
@@ -807,10 +871,42 @@ func (app *AppUI) submitCandidate() {
 		engineType = model.EngineHLS
 	}
 
-	filename := fmt.Sprintf("%s.%s", cleanTitle, fmtObj.Ext)
+	// 模式 A: 批量下载全部分集
+	if len(app.candidate.Episodes) > 1 && app.downloadAllEpisodes {
+		for _, ep := range app.candidate.Episodes {
+			taskTitle := fmt.Sprintf("%s [P%02d %s]", cleanMainTitle, ep.Index, sanitizeFilename(ep.Title))
+			filename := fmt.Sprintf("%s.%s", sanitizeFilename(taskTitle), fmtObj.Ext)
+			task := &model.Task{
+				ID:             uuid.New().String(),
+				Title:          taskTitle,
+				SourceURL:      ep.URL,
+				DownloadURL:    downloadURL,
+				Engine:         engineType,
+				Status:         model.StatusQueued,
+				TotalBytes:     fmtObj.Filesize,
+				OutputDir:      app.library.BaseDir(),
+				OutputFilename: filename,
+				Priority:       1,
+				CreatedAt:      time.Now(),
+				UpdatedAt:      time.Now(),
+			}
+			_ = app.scheduler.Submit(task)
+		}
+		app.refreshData()
+		return
+	}
+
+	// 模式 B: 单集下载（若属于多集中的某一集，在标题中附加分 P 序号）
+	taskTitle := app.candidate.Title
+	if len(app.candidate.Episodes) > 1 && app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
+		curEp := app.candidate.Episodes[app.candidate.CurrentPage-1]
+		taskTitle = fmt.Sprintf("%s [P%02d %s]", cleanMainTitle, curEp.Index, sanitizeFilename(curEp.Title))
+	}
+
+	filename := fmt.Sprintf("%s.%s", sanitizeFilename(taskTitle), fmtObj.Ext)
 	task := &model.Task{
 		ID:             uuid.New().String(),
-		Title:          app.candidate.Title,
+		Title:          taskTitle,
 		SourceURL:      app.candidate.SourceURL,
 		DownloadURL:    downloadURL,
 		Engine:         engineType,
