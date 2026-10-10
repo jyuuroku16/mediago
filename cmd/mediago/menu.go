@@ -73,11 +73,11 @@ func buildAppMenu(appUI *ui.AppUI, browserMgr *browser.Manager) *mygo.Menu {
 					},
 				},
 				{
-					Label:       "专用嗅探浏览器",
+					Label:       "网址启动器 (专用浏览器)…",
 					Accelerator: "CmdOrCtrl+B",
 					Click: func(*mygo.MenuItem, *mygo.Window) {
-						if browserMgr != nil {
-							browserMgr.Open("https://www.bilibili.com")
+						if appUI != nil {
+							appUI.OpenBrowserLauncher()
 						}
 					},
 				},
