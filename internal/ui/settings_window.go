@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,18 @@ import (
 	"mediago/internal/config"
 	"mediago/internal/discovery"
 )
+
+func openDirectory(dirPath string) {
+	_ = os.MkdirAll(dirPath, 0755)
+	switch runtime.GOOS {
+	case "windows":
+		_ = exec.Command("explorer", dirPath).Start()
+	case "darwin":
+		_ = exec.Command("open", dirPath).Start()
+	default:
+		_ = exec.Command("xdg-open", dirPath).Start()
+	}
+}
 
 // SettingsWindow 管理独立的 macOS 原生偏好设置视窗 (对标 OrbStack / macOS 原生规范)
 type SettingsWindow struct {
@@ -29,6 +42,11 @@ func NewSettingsWindow() *SettingsWindow {
 
 	// 监听配置变动，当外部或菜单栏变更时自动重绘设置窗口
 	config.Global().OnChange(func(_ config.Settings) {
+		sw.refresh()
+	})
+
+	// 监听工具安装器状态，当下载/解压进度变动时自动重绘设置视窗
+	discovery.DefaultInstaller().OnProgress(func(_ discovery.InstallProgress) {
 		sw.refresh()
 	})
 
@@ -147,7 +165,7 @@ func (sw *SettingsWindow) View(c *ui.Context) {
 
 				item.Children(func() {
 					ui.Icon(c, t.icon).FontSize(15).TextColor(iconC)
-					ui.Text(c, t.label).FontSize(13).Bold().TextColor(textC)
+					ui.Text(c, t.label).FontSize(13).TextColor(textC)
 				})
 
 				if item.Clicked() {
@@ -472,20 +490,120 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 			})
 		})
 
-		// 核心工具套件与运行时 SDK
+		// 核心外部工具套件 (严格对齐下方运行时环境的单行规格)
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "核心工具与 SDK").FontSize(12).TextColor(pal.TextSecondary)
+			ui.Row(c).Fill().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "流媒体核心工具").FontSize(12).TextColor(pal.TextSecondary).Grow(1)
 
-			sdkCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
-			sdkCard.Children(func() {
-				ytVer, ffVer := discovery.GetToolVersions()
-				items := []struct{ name, ver string }{
-					{"ffmpeg", ffVer},
-					{"yt-dlp", ytVer},
-					{"MyGo", "v0.3.7 (Metal GPU)"},
-					{"Go", runtime.Version()},
+				openDirBtn := ui.Row(c).Height(22).Padding(0, 8).Radius(4).
+					Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				openDirBtn.Children(func() {
+					ui.Text(c, "打开工具目录").FontSize(11).TextColor(pal.TextSecondary)
+				})
+				if openDirBtn.Clicked() {
+					openDirectory(discovery.GetToolsDir())
 				}
+			})
+
+			toolsCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
+			toolsCard.Children(func() {
+				installer := discovery.DefaultInstaller()
+				instState := installer.State()
+				isBusy := instState.Status == discovery.StatusDownloading || instState.Status == discovery.StatusExtracting
+
+				// 若处于安装状态，在卡片顶端显示细腻的微进度条
+				if isBusy {
+					ui.Column(c).Fill().Padding(8, 16).Gap(4).Background(ui.RGBA(0, 122, 255, 0.08)).Children(func() {
+						ui.Row(c).Fill().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, instState.Message).FontSize(11).Bold().TextColor(pal.Accent).Grow(1)
+							ui.Text(c, fmt.Sprintf("%.0f%%", instState.Percent*100)).FontSize(11).Bold().TextColor(pal.Accent)
+						})
+						ui.Row(c).Fill().Height(3).Radius(1.5).Background(ui.RGBA(127, 127, 127, 0.2)).Children(func() {
+							pct := float32(max(0.02, min(1.0, instState.Percent)))
+							ui.Box(c).Grow(pct).Height(3).Radius(1.5).Background(pal.Accent)
+							if pct < 1.0 {
+								ui.Spacer(c)
+							}
+						})
+					})
+					ui.Box(c).Height(1).Fill().Background(sepColor)
+				} else if instState.Status == discovery.StatusFailed && instState.Error != "" {
+					ui.Row(c).Fill().Padding(8, 16).Background(ui.RGBA(255, 69, 58, 0.1)).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "安装出错: "+instState.Error).FontSize(11).TextColor(ui.Hex("#ff453a")).Grow(1)
+					})
+					ui.Box(c).Height(1).Fill().Background(sepColor)
+				}
+
+				ytVer, ffVer := discovery.GetToolVersions()
+				items := []struct {
+					key, name, ver string
+				}{
+					{"ffmpeg", "ffmpeg", ffVer},
+					{"yt-dlp", "yt-dlp", ytVer},
+				}
+
 				for idx, it := range items {
+					item := it
+					installed := item.ver != "未安装"
+
+					ui.Row(c).Fill().Height(36).Padding(0, 16).AlignItems(ui.Center).Children(func() {
+						// 左侧名称：完全对齐下方的字号与主文本颜色
+						ui.Text(c, item.name).FontSize(12).TextColor(pal.TextPrimary).Grow(1)
+
+						// 右侧区域：版本徽标 + 微操作按钮 (统一高度 20，对齐基准线)
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+							// 版本 Badge (与下方运行时环境完全一致)
+							badge := ui.Row(c).Height(20).Padding(0, 8).Radius(4).
+								Background(pal.CardBg).AlignItems(ui.Center)
+							badge.Children(func() {
+								ui.Text(c, item.ver).FontSize(11).TextColor(pal.TextSecondary)
+							})
+
+							// 操作微按钮 (高度 20，低饱和度胶囊)
+							btnLabel := "更新"
+							btnBg := pal.CardBg
+							btnTextColor := pal.TextSecondary
+							if !installed {
+								btnLabel = "安装"
+								btnBg = pal.Accent
+								btnTextColor = ui.Hex("#ffffff")
+							}
+							if isBusy {
+								btnLabel = "..."
+							}
+
+							actionBtn := ui.Row(c).Height(20).Padding(0, 8).Radius(4).
+								Background(btnBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+							actionBtn.Children(func() {
+								ui.Text(c, btnLabel).FontSize(11).TextColor(btnTextColor)
+							})
+
+							if !isBusy && actionBtn.Clicked() {
+								go func(toolKey string) {
+									_ = discovery.DefaultInstaller().InstallTool(context.Background(), toolKey)
+								}(item.key)
+							}
+						})
+					})
+
+					if idx < len(items)-1 {
+						ui.Box(c).Height(1).Fill().Background(sepColor)
+					}
+				}
+			})
+		})
+
+		// 运行时与框架环境
+		ui.Column(c).Fill().Gap(8).Children(func() {
+			ui.Text(c, "运行时环境").FontSize(12).TextColor(pal.TextSecondary)
+
+			envCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
+			envCard.Children(func() {
+				envItems := []struct{ name, ver string }{
+					{"MyGo 原生 UI 渲染框架", "v0.3.7 (Metal GPU / Direct3D)"},
+					{"Go 语言运行时", runtime.Version()},
+				}
+				for idx, it := range envItems {
 					row := it
 					ui.Row(c).Fill().Height(36).Padding(0, 16).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, row.name).FontSize(12).TextColor(pal.TextPrimary).Grow(1)
@@ -495,7 +613,7 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 							ui.Text(c, row.ver).FontSize(11).TextColor(pal.TextSecondary)
 						})
 					})
-					if idx < len(items)-1 {
+					if idx < len(envItems)-1 {
 						ui.Box(c).Height(1).Fill().Background(sepColor)
 					}
 				}

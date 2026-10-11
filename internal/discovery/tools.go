@@ -75,26 +75,60 @@ func FindTool(name string) string {
 		return p
 	}
 
-	// 3. 常见平台系统备用目录探测
+	home, _ := os.UserHomeDir()
+
+	// 3. 常见平台系统备用目录与环境管理器路径探测 (覆盖 pyenv, pip, mise, asdf, conda, brew, scoop 等)
 	var systemCandidates []string
 	switch runtime.GOOS {
 	case "darwin":
 		systemCandidates = []string{
-			filepath.Join("/opt/homebrew/bin", exeName),
-			filepath.Join("/usr/local/bin", exeName),
-			filepath.Join("/usr/bin", exeName),
+			filepath.Join(home, ".pyenv", "shims", exeName),
+			filepath.Join(home, ".local", "bin", exeName),
+			filepath.Join(home, "bin", exeName),
+			filepath.Join(home, ".cargo", "bin", exeName),
+			filepath.Join(home, ".asdf", "shims", exeName),
+			filepath.Join(home, ".local", "share", "mise", "shims", exeName),
+			filepath.Join(home, "miniconda3", "bin", exeName),
+			filepath.Join(home, "anaconda3", "bin", exeName),
+			filepath.Join("/opt/homebrew", "bin", exeName),
+			filepath.Join("/usr/local", "bin", exeName),
+			filepath.Join("/opt/local", "bin", exeName),
+			filepath.Join("/usr", "bin", exeName),
+		}
+		if matches, err := filepath.Glob(filepath.Join(home, "Library", "Python", "*", "bin", exeName)); err == nil {
+			systemCandidates = append(systemCandidates, matches...)
 		}
 	case "windows":
+		userProfile := os.Getenv("USERPROFILE")
+		localAppData := os.Getenv("LOCALAPPDATA")
+		appData := os.Getenv("APPDATA")
 		systemCandidates = []string{
+			filepath.Join(userProfile, "scoop", "shims", exeName),
+			filepath.Join(userProfile, ".cargo", "bin", exeName),
 			`C:\Program Files\ffmpeg\bin\` + exeName,
 			`C:\ProgramData\chocolatey\bin\` + exeName,
-			filepath.Join(os.Getenv("USERPROFILE"), "scoop", "shims", exeName),
+		}
+		if localAppData != "" {
+			if matches, err := filepath.Glob(filepath.Join(localAppData, "Programs", "Python", "Python*", "Scripts", exeName)); err == nil {
+				systemCandidates = append(systemCandidates, matches...)
+			}
+		}
+		if appData != "" {
+			if matches, err := filepath.Glob(filepath.Join(appData, "Python", "Python*", "Scripts", exeName)); err == nil {
+				systemCandidates = append(systemCandidates, matches...)
+			}
 		}
 	case "linux":
 		systemCandidates = []string{
-			filepath.Join("/usr/local/bin", exeName),
-			filepath.Join("/usr/bin", exeName),
+			filepath.Join(home, ".local", "bin", exeName),
+			filepath.Join(home, "bin", exeName),
+			filepath.Join(home, ".pyenv", "shims", exeName),
+			filepath.Join(home, ".cargo", "bin", exeName),
+			filepath.Join(home, ".asdf", "shims", exeName),
+			filepath.Join("/usr/local", "bin", exeName),
+			filepath.Join("/usr", "bin", exeName),
 			filepath.Join("/bin", exeName),
+			filepath.Join("/snap", "bin", exeName),
 		}
 	}
 

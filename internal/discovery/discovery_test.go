@@ -71,3 +71,31 @@ func TestBilibiliAggregate(t *testing.T) {
 	}
 	t.Logf("成功检测到多集视频: 共 %d 集, 当前 P%d: %s", len(cand.Episodes), cand.CurrentPage, cand.Episodes[4].Title)
 }
+
+func TestCrossPlatformTools(t *testing.T) {
+	toolsDir := GetToolsDir()
+	if toolsDir == "" {
+		t.Fatalf("GetToolsDir 返回空字符串")
+	}
+
+	exeYt := ToolExecutableName("yt-dlp")
+	if exeYt == "" {
+		t.Fatalf("ToolExecutableName 返回空")
+	}
+
+	// 验证下载 URL 生成
+	directYt, mirrorYt, err := GetDownloadURLs("yt-dlp")
+	if err != nil || directYt == "" || mirrorYt == "" {
+		t.Fatalf("GetDownloadURLs(yt-dlp) 失败: err=%v, direct=%s, mirror=%s", err, directYt, mirrorYt)
+	}
+
+	directFf, mirrorFf, err := GetDownloadURLs("ffmpeg")
+	if err != nil || directFf == "" || mirrorFf == "" {
+		t.Fatalf("GetDownloadURLs(ffmpeg) 失败: err=%v, direct=%s, mirror=%s", err, directFf, mirrorFf)
+	}
+
+	// 探测版本不应当 panic
+	ytVer, ffVer := GetToolVersions()
+	t.Logf("当前探测工具版本: yt-dlp=%s, ffmpeg=%s", ytVer, ffVer)
+}
+

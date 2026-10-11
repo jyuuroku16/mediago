@@ -93,7 +93,7 @@ func main() {
 		appUI.SetWindow(win)
 
 		if os.Getenv("SHOW_SETTINGS_DEFAULT") == "1" {
-			appUI.OpenSettings()
+			appUI.OpenSettings("about")
 		} else if os.Getenv("SHOW_MODAL_DEFAULT") == "1" {
 			appUI.OpenNewDownload()
 		} else if os.Getenv("SHOW_BROWSER_DEFAULT") == "1" {

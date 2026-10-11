@@ -70,6 +70,9 @@ type AppUI struct {
 
 	// 键盘快捷键速查面板状态
 	showShortcuts bool
+
+	// 工具安装提示横幅已关闭标记
+	dismissToolBanner bool
 }
 
 // RefreshUI 触发主窗口重绘
@@ -160,6 +163,11 @@ func NewAppUI(
 		}
 	})
 
+	// 监听核心流媒体工具安装进度，触发主视窗重绘
+	discovery.DefaultInstaller().OnProgress(func(_ discovery.InstallProgress) {
+		app.RefreshUI()
+	})
+
 	return app
 }
 
@@ -237,6 +245,7 @@ func (app *AppUI) View(c *ui.Context) {
 		// 3. 右侧主体工作区 (Toolbar + 主内容流)
 		ui.Column(c).Grow(1).MinWidth(0).Background(pal.ContentBg).Children(func() {
 			app.renderTopBar(c, pal)
+			app.renderToolInstallBanner(c, pal)
 			app.renderMainContent(c, pal)
 		})
 	})
@@ -370,10 +379,7 @@ func (app *AppUI) renderSidebarItem(c *ui.Context, id, title string, icon *ui.SV
 	btn := ui.Row(c).Height(30).Padding(0, 10).Gap(8).Radius(7).Background(bg).AlignItems(ui.Center)
 	btn.Children(func() {
 		ui.Icon(c, icon).FontSize(14).TextColor(textC)
-		label := ui.Text(c, title).FontSize(13).TextColor(textC)
-		if isSelected {
-			label.Bold()
-		}
+		ui.Text(c, title).FontSize(13).TextColor(textC)
 		ui.Spacer(c)
 		if badge > 0 {
 			ui.Box(c).Padding(1, 6).Radius(8).Background(pal.Accent).Children(func() {
@@ -443,6 +449,82 @@ func (app *AppUI) renderTopBar(c *ui.Context, pal Palette) {
 			})
 		}
 	})
+}
+
+// renderToolInstallBanner 渲染顶部轻量流媒体工具缺失或安装进度横幅
+func (app *AppUI) renderToolInstallBanner(c *ui.Context, pal Palette) {
+	installer := discovery.DefaultInstaller()
+	state := installer.State()
+	isBusy := state.Status == discovery.StatusDownloading || state.Status == discovery.StatusExtracting
+
+	// 1. 若处于后台安装与配置状态，渲染高质感进度横条 (固定高度 36px)
+	if isBusy {
+		ui.Row(c).Height(36).Padding(0, 20).Gap(10).Background(ui.RGBA(0, 122, 255, 0.08)).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconDownload).FontSize(14).TextColor(pal.Accent)
+			ui.Text(c, state.Message).FontSize(12).Bold().TextColor(pal.Accent).Grow(1)
+			ui.Text(c, fmt.Sprintf("%.0f%%", state.Percent*100)).FontSize(11).Bold().TextColor(pal.Accent)
+		})
+		ui.Box(c).Height(1).Background(pal.HeaderBorder)
+		return
+	}
+
+	// 2. 若用户手动关闭了本次提醒，则静默
+	if app.dismissToolBanner {
+		return
+	}
+
+	// 3. 检测组件缺失情况
+	ytVer, ffVer := discovery.GetToolVersions()
+	if ytVer != "未安装" && ffVer != "未安装" {
+		return
+	}
+
+	missing := []string{}
+	if ffVer == "未安装" {
+		missing = append(missing, "FFmpeg")
+	}
+	if ytVer == "未安装" {
+		missing = append(missing, "yt-dlp")
+	}
+	missingStr := strings.Join(missing, " 和 ")
+
+	// 提示横幅 (浅暖色底衬，高度 36px，严格居中单行通知条)
+	ui.Row(c).Height(36).Padding(0, 20).Gap(12).Background(ui.RGBA(255, 159, 10, 0.10)).AlignItems(ui.Center).Children(func() {
+		ui.Icon(c, iconAlertCircle).FontSize(14).TextColor(ui.Hex("#ff9f0a"))
+		ui.Text(c, fmt.Sprintf("检测到未配置 %s 核心组件，视频解析与合并可能受限", missingStr)).
+			FontSize(12).TextColor(pal.TextPrimary).Grow(1)
+
+		// 一键自动配置按钮
+		cfgBtn := ui.Row(c).Height(22).Padding(0, 10).Radius(5).Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		cfgBtn.Children(func() {
+			ui.Text(c, "一键自动配置").FontSize(11).Bold().TextColor(ui.Hex("#ffffff"))
+		})
+		if cfgBtn.Clicked() {
+			go func() {
+				_ = installer.InstallAll(context.Background())
+			}()
+		}
+
+		// 偏好设置入口
+		setBtn := ui.Row(c).Height(22).Padding(0, 8).Radius(5).Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		setBtn.Children(func() {
+			ui.Text(c, "偏好设置").FontSize(11).TextColor(pal.TextSecondary)
+		})
+		if setBtn.Clicked() {
+			app.OpenSettings("about")
+		}
+
+		// 关闭横幅按钮
+		closeBtn := ui.Row(c).Height(20).Width(20).Radius(10).Center().Cursor(ui.CursorPointer)
+		closeBtn.Children(func() {
+			ui.Text(c, "✕").FontSize(11).TextColor(pal.TextMuted)
+		})
+		if closeBtn.Clicked() {
+			app.dismissToolBanner = true
+			app.RefreshUI()
+		}
+	})
+	ui.Box(c).Height(1).Background(pal.HeaderBorder)
 }
 
 // renderMainContent 渲染主工作区卡片流

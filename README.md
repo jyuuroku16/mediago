@@ -34,9 +34,10 @@ A native, high-performance media sniffer and universal downloader for macOS, wri
 
 MediaGo requires [Go](https://go.dev/dl/) 1.27+ and macOS 12+.
 
-External CLI tools (recommended for full functionality):
+External CLI tools (with built-in one-click in-app auto-installer and hot update support):
 - [ffmpeg](https://ffmpeg.org/): For HLS segment remuxing and audio/video stream joining.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp): For deep stream format extraction across video platforms.
+> *Note: MediaGo automatically reuses system installations if present. If missing, the app features an integrated cross-platform downloader (macOS / Windows / Linux) that can install and update them into your user data directory with a single click in the main window banner or Settings.*
 
 ```sh
 # Run locally in development mode

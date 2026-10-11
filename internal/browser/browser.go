@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/google/uuid"
+	"mediago/internal/config"
 	"mediago/internal/discovery"
 	"mediago/internal/model"
 )
@@ -340,11 +343,44 @@ func (m *Manager) Open(initialURL string) {
 	})
 }
 
+// isDarkMode 检测系统或配置是否处于深色模式
+func (m *Manager) isDarkMode() bool {
+	cfg := config.Global().Get()
+	if cfg.Theme == "dark" {
+		return true
+	}
+	if cfg.Theme == "light" {
+		return false
+	}
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("defaults", "read", "-g", "AppleInterfaceStyle").Output()
+		if err == nil && strings.TrimSpace(string(out)) == "Dark" {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
 // injectGorexTopBar 注入 Gorex 风格顶栏: 交通灯避让、输入栏聚焦让出40%、渐进模糊遮罩、多标签栏+、圆角容器主体
 func (m *Manager) injectGorexTopBar(page *mygo.Page) {
+	themeMode := "light"
+	if m.isDarkMode() {
+		themeMode = "dark"
+	}
+
 	script := `(() => {
 		try {
 			if (window !== window.top) return; // 仅在顶层窗口运行
+
+			const mgAppTheme = "` + themeMode + `";
+			if (mgAppTheme === 'light') {
+				document.documentElement.classList.add('mg-theme-light');
+				document.documentElement.classList.remove('mg-theme-dark');
+			} else {
+				document.documentElement.classList.add('mg-theme-dark');
+				document.documentElement.classList.remove('mg-theme-light');
+			}
 
 			// 1. 确保多标签页数据初始化与持久化
 			const TABS_KEY = 'mediago_browser_tabs_v2';
@@ -480,6 +516,50 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						--mg-select-bg: rgba(255, 255, 255, 0.1);
 						--mg-select-border: rgba(255, 255, 255, 0.16);
 						--mg-select-color: #ffffff;
+					}
+
+					:root.mg-theme-light,
+					.mg-theme-light {
+						--mg-topbar-bg: rgba(246, 246, 248, 0.94);
+						--mg-topbar-border: rgba(0, 0, 0, 0.09);
+						--mg-topbar-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+						--mg-btn-color: rgba(0, 0, 0, 0.65);
+						--mg-btn-hover-bg: rgba(0, 0, 0, 0.08);
+						--mg-btn-hover-color: #000000;
+						--mg-omni-bg: rgba(0, 0, 0, 0.05);
+						--mg-omni-border: rgba(0, 0, 0, 0.1);
+						--mg-omni-text: #1d1d1f;
+						--mg-omni-icon: rgba(0, 0, 0, 0.45);
+						--mg-omni-focus-bg: #ffffff;
+						--mg-omni-focus-border: rgba(0, 113, 227, 0.6);
+						--mg-omni-focus-ring: rgba(0, 113, 227, 0.12);
+						--mg-strip-bg: rgba(0, 0, 0, 0.05);
+						--mg-strip-border: rgba(0, 0, 0, 0.08);
+						--mg-tab-color: rgba(0, 0, 0, 0.65);
+						--mg-tab-hover-bg: rgba(0, 0, 0, 0.06);
+						--mg-tab-hover-color: #000000;
+						--mg-tab-active-bg: #ffffff;
+						--mg-tab-active-color: #1d1d1f;
+						--mg-tab-active-border: rgba(0, 0, 0, 0.12);
+						--mg-tab-active-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+						--mg-tab-close-color: rgba(0, 0, 0, 0.45);
+						--mg-tab-close-hover-bg: rgba(0, 0, 0, 0.1);
+						--mg-tab-close-hover-color: #000000;
+						--mg-toast-bg: rgba(255, 255, 255, 0.96);
+						--mg-toast-border: rgba(0, 0, 0, 0.12);
+						--mg-toast-shadow: 0 10px 32px rgba(0, 0, 0, 0.16);
+						--mg-toast-title: #1d1d1f;
+						--mg-toast-body: #3a3a3c;
+						--mg-toast-muted: rgba(0, 0, 0, 0.5);
+						--mg-toast-btn-sec-bg: rgba(0, 0, 0, 0.06);
+						--mg-toast-btn-sec-color: rgba(0, 0, 0, 0.75);
+						--mg-close-btn-color: rgba(0, 0, 0, 0.45);
+						--mg-close-btn-hover-bg: rgba(0, 0, 0, 0.08);
+						--mg-close-btn-hover-color: #000000;
+						--mg-spinner-track: rgba(0, 0, 0, 0.15);
+						--mg-select-bg: rgba(0, 0, 0, 0.05);
+						--mg-select-border: rgba(0, 0, 0, 0.12);
+						--mg-select-color: #1d1d1f;
 					}
 
 					@media (prefers-color-scheme: light) {
@@ -851,8 +931,6 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						width: 100%;
 					}
 				` + "`" + `;
-				document.documentElement.appendChild(styleEl);
-			}
 
 			// 3. 构建/更新顶栏 DOM
 			const safeSetHTML = (el, htmlStr) => {
@@ -889,6 +967,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				bar.id = 'mg-chrome-topbar';
 				document.documentElement.appendChild(bar);
 			}
+			bar.className = (mgAppTheme === 'light' ? 'mg-theme-light' : 'mg-theme-dark');
 
 			// 组装顶栏 HTML
 			let tabsHTML = tabs.map((t, idx) => {
