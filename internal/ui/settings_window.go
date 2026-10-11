@@ -5,11 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"mediago/internal/config"
+	"mediago/internal/discovery"
 )
 
 // SettingsWindow 管理独立的 macOS 原生偏好设置视窗 (对标 OrbStack / macOS 原生规范)
@@ -240,14 +242,14 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, theme *ui.Theme, pal P
 	sepColor := sw.cardSep(theme)
 
 	ui.Column(c).Fill().Gap(20).Children(func() {
-		// 外观分组 (无边框磨砂卡片，Section 名置于卡片上方)
+		// 外观分组 (Section 名置于卡片上方，次级优雅字重)
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "界面外观").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "界面外观").FontSize(12).TextColor(pal.TextSecondary)
 
 			card := ui.Row(c).Fill().Padding(10, 16).Radius(10).Background(cardBg).AlignItems(ui.Center)
 			card.Children(func() {
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "界面色彩外观").FontSize(13).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "界面色彩外观").FontSize(13).TextColor(pal.TextPrimary)
 					ui.Text(c, "跟随系统偏好或指定浅色、深色模式").FontSize(11).TextColor(pal.TextSecondary)
 				})
 
@@ -274,7 +276,7 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, theme *ui.Theme, pal P
 
 		// 通知与行为分组
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "通知与行为").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "通知与行为").FontSize(12).TextColor(pal.TextSecondary)
 
 			groupCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			groupCard.Children(func() {
@@ -282,7 +284,7 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, theme *ui.Theme, pal P
 				r1 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
-						ui.Text(c, "任务完成通知").FontSize(13).Bold().TextColor(pal.TextPrimary)
+						ui.Text(c, "任务完成通知").FontSize(13).TextColor(pal.TextPrimary)
 						ui.Text(c, "视频下载或转码完成时显示系统通知").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
@@ -297,7 +299,7 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, theme *ui.Theme, pal P
 				r2 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r2.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
-						ui.Text(c, "自动开始新加入的任务").FontSize(13).Bold().TextColor(pal.TextPrimary)
+						ui.Text(c, "自动开始新加入的任务").FontSize(13).TextColor(pal.TextPrimary)
 						ui.Text(c, "解析确认后任务立即加入并发调度并开始下载").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
@@ -318,7 +320,7 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, theme *ui.Theme, pa
 	ui.Column(c).Fill().Gap(20).Children(func() {
 		// 并发控制
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "调度控制").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "调度控制").FontSize(12).TextColor(pal.TextSecondary)
 
 			groupCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			groupCard.Children(func() {
@@ -326,7 +328,7 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, theme *ui.Theme, pa
 				r1 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r1.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
-						ui.Text(c, "最大并发下载任务数").FontSize(13).Bold().TextColor(pal.TextPrimary)
+						ui.Text(c, "最大并发下载任务数").FontSize(13).TextColor(pal.TextPrimary)
 						ui.Text(c, "同时进行下载的任务上限限制").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
@@ -347,7 +349,7 @@ func (sw *SettingsWindow) renderDownloaderTab(c *ui.Context, theme *ui.Theme, pa
 				r2 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r2.Children(func() {
 					ui.Column(c).Gap(2).Grow(1).Children(func() {
-						ui.Text(c, "首选视频画质").FontSize(13).Bold().TextColor(pal.TextPrimary)
+						ui.Text(c, "首选视频画质").FontSize(13).TextColor(pal.TextPrimary)
 						ui.Text(c, "解析多规格视频时默认优先选择的清晰度").FontSize(11).TextColor(pal.TextSecondary)
 					})
 
@@ -382,17 +384,17 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, theme *ui.Theme, pal P
 	ui.Column(c).Fill().Gap(20).Children(func() {
 		// 存储路径分组
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "默认保存位置").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "默认保存位置").FontSize(12).TextColor(pal.TextSecondary)
 
 			pathCard := ui.Column(c).Fill().Padding(12, 16).Gap(10).Radius(10).Background(cardBg)
 			pathCard.Children(func() {
-				ui.Text(c, s.DownloadDir).FontSize(13).Bold().TextColor(pal.TextPrimary)
+				ui.Text(c, s.DownloadDir).FontSize(13).TextColor(pal.TextPrimary)
 
 				ui.Row(c).Gap(8).Children(func() {
 					chooseBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(6).
 						Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 					chooseBtn.Children(func() {
-						ui.Text(c, "更改目录…").FontSize(11).Bold().TextColor(pal.TextPrimary)
+						ui.Text(c, "更改目录…").FontSize(11).TextColor(pal.TextPrimary)
 					})
 					if chooseBtn.Clicked() {
 						paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
@@ -419,12 +421,12 @@ func (sw *SettingsWindow) renderStorageTab(c *ui.Context, theme *ui.Theme, pal P
 
 		// 配置文件管理
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "配置文件").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "配置文件").FontSize(12).TextColor(pal.TextSecondary)
 
 			cfgCard := ui.Row(c).Fill().Padding(12, 16).Radius(10).Background(cardBg).AlignItems(ui.Center)
 			cfgCard.Children(func() {
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, "本地偏好设置文件").FontSize(13).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "本地偏好设置文件").FontSize(13).TextColor(pal.TextPrimary)
 					ui.Text(c, "~/.mediago/mediago.jsonc").FontSize(11).TextColor(pal.TextSecondary)
 				})
 
@@ -450,7 +452,7 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 	ui.Column(c).Fill().Gap(20).Children(func() {
 		// 关于 MediaGo
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "关于应用").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "关于应用").FontSize(12).TextColor(pal.TextSecondary)
 
 			infoCard := ui.Row(c).Fill().Padding(12, 16).Radius(10).Background(cardBg).AlignItems(ui.Center)
 			infoCard.Children(func() {
@@ -462,17 +464,47 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 				ghBtn := ui.Row(c).Height(26).Padding(0, 10).Radius(6).
 					Background(pal.CardBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 				ghBtn.Children(func() {
-					ui.Text(c, "GitHub 主页").FontSize(11).Bold().TextColor(pal.TextPrimary)
+					ui.Text(c, "GitHub 主页").FontSize(11).TextColor(pal.TextPrimary)
 				})
 				if ghBtn.Clicked() {
-					_ = exec.Command("open", "https://github.com/egoist/mygo").Start()
+					_ = exec.Command("open", "https://github.com/jyuuroku16/mediago").Start()
+				}
+			})
+		})
+
+		// 核心工具套件与运行时 SDK
+		ui.Column(c).Fill().Gap(8).Children(func() {
+			ui.Text(c, "核心工具与 SDK").FontSize(12).TextColor(pal.TextSecondary)
+
+			sdkCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
+			sdkCard.Children(func() {
+				ytVer, ffVer := discovery.GetToolVersions()
+				items := []struct{ name, ver string }{
+					{"ffmpeg", ffVer},
+					{"yt-dlp", ytVer},
+					{"MyGo", "v0.3.7 (Metal GPU)"},
+					{"Go", runtime.Version()},
+				}
+				for idx, it := range items {
+					row := it
+					ui.Row(c).Fill().Height(36).Padding(0, 16).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, row.name).FontSize(12).TextColor(pal.TextPrimary).Grow(1)
+						badge := ui.Row(c).Height(20).Padding(0, 8).Radius(4).
+							Background(pal.CardBg).AlignItems(ui.Center)
+						badge.Children(func() {
+							ui.Text(c, row.ver).FontSize(11).TextColor(pal.TextSecondary)
+						})
+					})
+					if idx < len(items)-1 {
+						ui.Box(c).Height(1).Fill().Background(sepColor)
+					}
 				}
 			})
 		})
 
 		// 键盘快捷键对照
 		ui.Column(c).Fill().Gap(8).Children(func() {
-			ui.Text(c, "常用快捷键").FontSize(13).Bold().TextColor(pal.TextPrimary)
+			ui.Text(c, "常用快捷键").FontSize(12).TextColor(pal.TextSecondary)
 
 			kbCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			kbCard.Children(func() {
@@ -490,7 +522,7 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 						badge := ui.Row(c).Height(20).Padding(0, 6).Radius(4).
 							Background(pal.CardBg).AlignItems(ui.Center)
 						badge.Children(func() {
-							ui.Text(c, item.key).FontSize(11).Bold().TextColor(pal.TextPrimary)
+							ui.Text(c, item.key).FontSize(11).TextColor(pal.TextPrimary)
 						})
 					})
 					if idx < len(shortcuts)-1 {

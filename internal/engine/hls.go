@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"mediago/internal/discovery"
 	"mediago/internal/model"
 )
 
@@ -26,15 +27,9 @@ type HLSEngine struct {
 
 // NewHLSEngine 创建 HLS 引擎，自动查找 ffmpeg 路径
 func NewHLSEngine() *HLSEngine {
-	ffPath := "/opt/homebrew/bin/ffmpeg"
-	if _, err := os.Stat(ffPath); err != nil {
-		if p, err := exec.LookPath("ffmpeg"); err == nil {
-			ffPath = p
-		}
-	}
 	return &HLSEngine{
 		client:     &http.Client{Timeout: 30 * time.Second},
-		ffmpegPath: ffPath,
+		ffmpegPath: discovery.FindFFmpeg(),
 	}
 }
 
@@ -132,6 +127,12 @@ func (h *HLSEngine) Download(ctx context.Context, task *model.Task, opts Downloa
 	_ = f.Close()
 
 	// 4. 调用 ffmpeg 进行无损 remux 封装
+	if h.ffmpegPath == "" {
+		h.ffmpegPath = discovery.FindFFmpeg()
+	}
+	if h.ffmpegPath == "" {
+		return fmt.Errorf("系统未找到可用的 FFmpeg 工具，无法合并分片。请在偏好设置中一键下载安装")
+	}
 	cmd := exec.CommandContext(ctx, h.ffmpegPath, "-y", "-f", "concat", "-safe", "0", "-i", concatListFile, "-c", "copy", finalPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

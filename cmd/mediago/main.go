@@ -96,6 +96,8 @@ func main() {
 			appUI.OpenSettings()
 		} else if os.Getenv("SHOW_MODAL_DEFAULT") == "1" {
 			appUI.OpenNewDownload()
+		} else if os.Getenv("SHOW_BROWSER_DEFAULT") == "1" {
+			browserMgr.Open("https://www.bilibili.com")
 		}
 
 		win.OnClosed(func() {

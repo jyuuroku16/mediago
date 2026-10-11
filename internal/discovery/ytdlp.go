@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -22,26 +21,7 @@ type YtDlpExtractor struct {
 
 // NewYtDlpExtractor 初始化解析器并探测可用二进制路径
 func NewYtDlpExtractor() *YtDlpExtractor {
-	candidatePaths := []string{
-		"/Users/wuzhiying/.pyenv/shims/yt-dlp",
-		"/opt/homebrew/bin/yt-dlp",
-		"/usr/local/bin/yt-dlp",
-	}
-
-	selected := ""
-	for _, p := range candidatePaths {
-		if _, err := os.Stat(p); err == nil {
-			selected = p
-			break
-		}
-	}
-	if selected == "" {
-		if p, err := exec.LookPath("yt-dlp"); err == nil {
-			selected = p
-		}
-	}
-
-	return &YtDlpExtractor{binPath: selected}
+	return &YtDlpExtractor{binPath: FindYtDlp()}
 }
 
 type ytdlpFormat struct {
@@ -103,13 +83,19 @@ func (e *YtDlpExtractor) Extract(ctx context.Context, rawURL string) (*model.Can
 	}
 
 	if e.binPath == "" {
-		return nil, fmt.Errorf("系统未找到可用的 yt-dlp 可执行文件")
+		e.binPath = FindYtDlp()
+	}
+	if e.binPath == "" {
+		return nil, fmt.Errorf("系统未找到可用的 yt-dlp 可执行文件，请在偏好设置中一键下载安装")
 	}
 
 	// 2. 调用 yt-dlp
 	cmd := exec.CommandContext(ctx, e.binPath, "--dump-single-json", "--no-warnings", "--no-playlist", normURL)
 	out, err := cmd.Output()
 	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("yt-dlp 解析失败: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return nil, fmt.Errorf("yt-dlp 解析失败: %w", err)
 	}
 

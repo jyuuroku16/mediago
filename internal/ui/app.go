@@ -686,7 +686,24 @@ func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
 					if fileMissing {
 						iconC = pal.TextMuted
 					}
-					ui.Icon(c, iconFilm).FontSize(24).TextColor(iconC)
+
+					// 媒体资源库 item 左侧图标改为 16:9 视频首帧预览 (宽 80, 高 45)
+					var thumbBm *ui.Bitmap
+					if !fileMissing {
+						thumbBm = app.library.GetThumbnail(a.FilePath, func() {
+							c.Invalidate()
+						})
+					}
+
+					if thumbBm != nil {
+						ui.Image(c, thumbBm).Size(80, 45).Radius(6).Fit(ui.Cover)
+					} else {
+						placeholder := ui.Row(c).Size(80, 45).Radius(6).
+							Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).Center()
+						placeholder.Children(func() {
+							ui.Icon(c, iconFilm).FontSize(18).TextColor(iconC)
+						})
+					}
 
 					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 						titleRow := ui.Row(c).Gap(6).AlignItems(ui.Center)
@@ -748,32 +765,42 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 					Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).
 					AlignItems(ui.Center).Grow(1).Children(func() {
 					ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.TextMuted)
-					in := ui.TextInputBase(c, &app.modalURL).Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
+					in := ui.TextInputBase(c, &app.modalURL).AutoFocus().Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
 					if in.Submitted() || in.Shortcut(0, ui.KeyEnter) {
 						if app.candidate != nil && len(app.candidate.Formats) > 0 {
 							app.submitCandidate()
 							app.showModal = false
-						} else {
+						} else if strings.TrimSpace(app.modalURL) != "" {
 							app.startExtract()
 						}
 					}
 				})
 
-				// 移出到输入框右侧的 Accent 主按钮
-				parseBtn := ui.Row(c).Height(38).Padding(0, 18).Radius(8).
-					Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-				parseBtn.Children(func() {
-					ui.Text(c, "解析").FontSize(13).Bold().TextColor(ui.Hex("#ffffff"))
-				})
-				if parseBtn.Clicked() {
-					app.startExtract()
+				// 移出到输入框右侧的主按钮 (无内容或解析中置灰，有内容高亮 Accent 蓝)
+				hasURL := strings.TrimSpace(app.modalURL) != ""
+				canParse := hasURL && !app.isExtracting
+
+				parseBtn := ui.Row(c).Height(38).Padding(0, 18).Radius(8).AlignItems(ui.Center)
+				if canParse {
+					parseBtn.Background(pal.Accent).Cursor(ui.CursorPointer)
+					parseBtn.Children(func() {
+						ui.Text(c, "解析").FontSize(13).Bold().TextColor(ui.Hex("#ffffff"))
+					})
+					if parseBtn.Clicked() {
+						app.startExtract()
+					}
+				} else {
+					parseBtn.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).Cursor(ui.CursorDefault)
+					parseBtn.Children(func() {
+						ui.Text(c, "解析").FontSize(13).TextColor(pal.TextMuted)
+					})
 				}
 			})
 
 			if app.isExtracting {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Spinner(c).FontSize(14).TextColor(pal.Accent)
-					ui.Text(c, "正在深入探测解析视频规格与流媒体分片...").FontSize(12).TextColor(pal.Accent)
+					ui.Text(c, "正在解析视频...").FontSize(12).TextColor(pal.Accent)
 				})
 			}
 
@@ -1123,6 +1150,9 @@ func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 					url   string
 					color string
 				}{
+					{"X", "https://x.com", "#1da1f2"},
+					{"Facebook", "https://www.facebook.com", "#1877f2"},
+					{"Threads", "https://www.threads.com", "#e1306c"},
 					{"哔哩哔哩", "https://www.bilibili.com", "#fb7299"},
 					{"YouTube", "https://www.youtube.com", "#ff0000"},
 					{"抖音", "https://www.douyin.com", "#00f2fe"},
@@ -1131,41 +1161,26 @@ func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
 					{"爱奇艺", "https://www.iqiyi.com", "#00cc4c"},
 				}
 
-				// 第一行 3 个 (每个 Grow(1)，平分整行)
-				ui.Row(c).Gap(8).Children(func() {
-					for _, hub := range hubs[:3] {
-						h := hub
-						card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
-							Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-						card.Children(func() {
-							ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
-							ui.Text(c, h.name).FontSize(12).Bold().TextColor(pal.TextPrimary).Grow(1)
-							ui.Text(c, "›").FontSize(12).TextColor(pal.TextMuted)
-						})
-						if card.Clicked() {
-							app.showBrowserLauncher = false
-							app.browserMgr.Open(h.url)
+				for row := 0; row < 3; row++ {
+					start := row * 3
+					end := start + 3
+					ui.Row(c).Gap(8).Children(func() {
+						for _, hub := range hubs[start:end] {
+							h := hub
+							card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
+								Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
+							card.Children(func() {
+								ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
+								ui.Text(c, h.name).FontSize(12).TextColor(pal.TextPrimary).Grow(1)
+								ui.Text(c, "›").FontSize(12).TextColor(pal.TextMuted)
+							})
+							if card.Clicked() {
+								app.showBrowserLauncher = false
+								app.browserMgr.Open(h.url)
+							}
 						}
-					}
-				})
-
-				// 第二行 3 个 (每个 Grow(1)，平分整行)
-				ui.Row(c).Gap(8).Children(func() {
-					for _, hub := range hubs[3:] {
-						h := hub
-						card := ui.Row(c).Height(34).Grow(1).Padding(0, 12).Gap(8).Radius(8).
-							Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center)
-						card.Children(func() {
-							ui.Box(c).Size(7, 7).Radius(3.5).Background(ui.Hex(h.color))
-							ui.Text(c, h.name).FontSize(12).Bold().TextColor(pal.TextPrimary).Grow(1)
-							ui.Text(c, "›").FontSize(12).TextColor(pal.TextMuted)
-						})
-						if card.Clicked() {
-							app.showBrowserLauncher = false
-							app.browserMgr.Open(h.url)
-						}
-					}
-				})
+					})
+				}
 			})
 		})
 	})

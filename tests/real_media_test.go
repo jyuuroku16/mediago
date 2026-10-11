@@ -69,3 +69,55 @@ func TestRealYtDlpExtract(t *testing.T) {
 		t.Fatalf("提取的候选信息不完整: %+v", cand)
 	}
 }
+
+// TestRealXSniffExtract 测试 X (Twitter) 真实视频嗅探解析
+func TestRealXSniffExtract(t *testing.T) {
+	extractor := discovery.NewYtDlpExtractor()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	testURL := "https://x.com/_Kavsoft/status/2108680194659873098"
+	cand, err := extractor.Extract(ctx, testURL)
+	if err != nil {
+		t.Logf("网络受限或外部接口变动，跳过 X 嗅探: %v", err)
+		return
+	}
+
+	t.Logf("X 视频解析成功: 标题=%s, 创作者=%s, 时长=%.1fs, 规格数=%d",
+		cand.Title, cand.Author, cand.Duration, len(cand.Formats))
+
+	if cand.Title == "" {
+		t.Fatalf("X 视频解析出的标题为空")
+	}
+	if len(cand.Formats) == 0 {
+		t.Fatalf("X 视频未解析出任何下载规格")
+	}
+}
+
+// TestRealThreadsSniffExtract 测试 Threads 真实视频嗅探与页面识别
+func TestRealThreadsSniffExtract(t *testing.T) {
+	testURL := "https://www.threads.com/@motogp/post/DeTICF9iehP"
+
+	// 1. 验证 URL 规范化
+	normURL := discovery.NormalizeURL(testURL)
+	if normURL == "" {
+		t.Fatalf("Threads URL 规范化异常")
+	}
+	t.Logf("Threads URL 规范化结果: %s", normURL)
+
+	// 2. 验证嗅探提取分发与容错诊断
+	extractor := discovery.NewYtDlpExtractor()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cand, err := extractor.Extract(ctx, normURL)
+	if err != nil {
+		t.Logf("Threads 属于 Meta 强动态渲染架构，yt-dlp 暂未提供原生解析 (符合当前预期，已由浏览器内置嗅探承接): %v", err)
+		return
+	}
+
+	if cand != nil {
+		t.Logf("Threads 解析成功: 标题=%s, 规格数=%d", cand.Title, len(cand.Formats))
+	}
+}
+

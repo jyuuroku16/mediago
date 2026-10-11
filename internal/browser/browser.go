@@ -91,7 +91,7 @@ func (m *Manager) Open(initialURL string) {
 		TitleBarStyle:        mygo.TitleBarHiddenInset,
 		TitleBarHeight:       44,
 		Vibrancy:             mygo.VibrancySidebar,
-		BackgroundColor:      "#1c1c20",
+		BackgroundColor:      "light-dark(#f6f6f8, #1c1c20)",
 		TrafficLightPosition: &mygo.Point{X: 16, Y: 14},
 		StateKey:      "mediago_browser_window",
 		Page: mygo.PageOptions{
@@ -101,6 +101,12 @@ func (m *Manager) Open(initialURL string) {
 	})
 
 	m.window = win
+
+	// 拦截关闭事件转为隐藏窗口，保持 WebKit 实例活跃，防止销毁导致会话级 Cookie 丢失，确保极速唤起
+	win.OnClose(func(e *mygo.CloseEvent) {
+		e.PreventDefault()
+		win.Hide()
+	})
 
 	win.OnClosed(func() {
 		m.mu.Lock()
@@ -117,21 +123,33 @@ func (m *Manager) Open(initialURL string) {
 	page.OnWillNavigate(func(e *mygo.NavigateEvent) {
 		if strings.HasPrefix(e.URL, "mediago-sniff://extract") {
 			e.PreventDefault()
-			raw := strings.TrimPrefix(e.URL, "mediago-sniff://extract?")
-			q, _ := url.ParseQuery(raw)
-			decURL := q.Get("url")
+			decURL := ""
+			if u, err := url.Parse(e.URL); err == nil {
+				decURL = u.Query().Get("url")
+			}
+			if decURL == "" {
+				raw := strings.TrimPrefix(e.URL, "mediago-sniff://extract")
+				raw = strings.TrimPrefix(raw, "/")
+				raw = strings.TrimPrefix(raw, "?")
+				if q, err := url.ParseQuery(raw); err == nil {
+					decURL = q.Get("url")
+				}
+			}
+			if decURL == "" {
+				decURL = m.GetCurrentURL()
+			}
 			if decURL == "" {
 				return
 			}
 
 			// 在后台异步深度探测，主窗口完全不弹窗
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 				defer cancel()
 
 				cand, err := m.extractor.Extract(ctx, decURL)
 				if err != nil || cand == nil {
-					errStr := "页面视频深度解析受限"
+					errStr := "页面视频解析受限"
 					if err != nil {
 						errStr = err.Error()
 					}
@@ -175,9 +193,18 @@ func (m *Manager) Open(initialURL string) {
 
 		if strings.HasPrefix(e.URL, "mediago-sniff://confirm-download") {
 			e.PreventDefault()
-			raw := strings.TrimPrefix(e.URL, "mediago-sniff://confirm-download?")
-			q, _ := url.ParseQuery(raw)
-			fmtID := q.Get("fmtId")
+			fmtID := ""
+			if u, err := url.Parse(e.URL); err == nil {
+				fmtID = u.Query().Get("fmtId")
+			}
+			if fmtID == "" {
+				raw := strings.TrimPrefix(e.URL, "mediago-sniff://confirm-download")
+				raw = strings.TrimPrefix(raw, "/")
+				raw = strings.TrimPrefix(raw, "?")
+				if q, err := url.ParseQuery(raw); err == nil {
+					fmtID = q.Get("fmtId")
+				}
+			}
 
 			m.mu.Lock()
 			cand := m.lastCand
@@ -241,10 +268,21 @@ func (m *Manager) Open(initialURL string) {
 
 		if strings.HasPrefix(e.URL, "mediago-sniff://direct-download") {
 			e.PreventDefault()
-			raw := strings.TrimPrefix(e.URL, "mediago-sniff://direct-download?")
-			q, _ := url.ParseQuery(raw)
-			directURL := q.Get("directUrl")
-			tTitle := q.Get("title")
+			directURL := ""
+			tTitle := ""
+			if u, err := url.Parse(e.URL); err == nil {
+				directURL = u.Query().Get("directUrl")
+				tTitle = u.Query().Get("title")
+			}
+			if directURL == "" {
+				raw := strings.TrimPrefix(e.URL, "mediago-sniff://direct-download")
+				raw = strings.TrimPrefix(raw, "/")
+				raw = strings.TrimPrefix(raw, "?")
+				if q, err := url.ParseQuery(raw); err == nil {
+					directURL = q.Get("directUrl")
+					tTitle = q.Get("title")
+				}
+			}
 			if tTitle == "" {
 				tTitle = "嗅探直链视频"
 			}
@@ -340,21 +378,156 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 			if (!styleEl) {
 				styleEl = document.createElement('style');
 				styleEl.id = 'mediago-gorex-styles';
-				styleEl.innerHTML = ` + "`" + `
-					/* 页面主体: 移除白色边框与内缩，恢复全屏通透无切边 */
+				document.documentElement.appendChild(styleEl);
+			}
+			styleEl.textContent = ` + "`" + `
+					/* 页面主体视口统一下移 44px，从顶栏下边界开始 */
 					html {
-						height: 100% !important;
-					}
-					body {
-						margin: 0 !important;
 						padding-top: 44px !important;
 						box-sizing: border-box !important;
-						border: none !important;
-						border-radius: 0 !important;
-						box-shadow: none !important;
+					}
+					body {
+						box-sizing: border-box !important;
 					}
 
-					/* 顶栏: 类似 gorex titleBar (高度 44px, 交通灯避让 78px, 均匀毛玻璃磨砂底板) */
+					/* 统一下移各大网站的顶部固定栏 (包括 YouTube, Bilibili, 抖音, 微博等) */
+					#masthead-container,
+					ytd-masthead,
+					#bili-header-container,
+					.bili-header,
+					.bili-header__bar,
+					.mini-header,
+					.m-top-bar,
+					header.bili-header,
+					header.bili-header--sticky,
+					#header-bar,
+					.bili-feed-header,
+					.bili-header--mini,
+					#internationalHeader,
+					.video-toolbar-container,
+					.douyin-header,
+					.wbpro-topbar,
+					header[class*="header"],
+					div[class*="header-bar"],
+					nav[class*="nav"] {
+						top: 44px !important;
+					}
+
+					/* YouTube 专用深度补偿: 确保 masthead 和 page-manager 均不遮挡 */
+					ytd-app {
+						--ytd-masthead-height: 56px !important;
+					}
+					#masthead-container {
+						top: 44px !important;
+					}
+					ytd-masthead {
+						top: 44px !important;
+					}
+					#page-manager {
+						margin-top: 100px !important;
+					}
+					#guide-wrapper, #guide-content {
+						top: 100px !important;
+					}
+
+					/* Bilibili 专用深度补偿: 确保顶部固定栏避让 */
+					.bili-header, #bili-header-container {
+						top: 44px !important;
+					}
+					.bili-feed-header {
+						top: 44px !important;
+					}
+
+					/* 核心色彩与视觉变量 (默认深色模式，浅色模式通过 prefers-color-scheme 优雅覆盖) */
+					:root {
+						--mg-topbar-bg: rgba(28, 28, 32, 0.90);
+						--mg-topbar-border: rgba(255, 255, 255, 0.08);
+						--mg-topbar-shadow: none;
+						--mg-btn-color: rgba(255, 255, 255, 0.72);
+						--mg-btn-hover-bg: rgba(255, 255, 255, 0.12);
+						--mg-btn-hover-color: #ffffff;
+						--mg-omni-bg: rgba(255, 255, 255, 0.07);
+						--mg-omni-border: rgba(255, 255, 255, 0.12);
+						--mg-omni-text: #ffffff;
+						--mg-omni-icon: rgba(255, 255, 255, 0.55);
+						--mg-omni-focus-bg: rgba(255, 255, 255, 0.12);
+						--mg-omni-focus-border: rgba(255, 255, 255, 0.35);
+						--mg-omni-focus-ring: rgba(255, 255, 255, 0.06);
+						--mg-strip-bg: rgba(255, 255, 255, 0.04);
+						--mg-strip-border: rgba(255, 255, 255, 0.06);
+						--mg-tab-color: rgba(255, 255, 255, 0.65);
+						--mg-tab-hover-bg: rgba(255, 255, 255, 0.08);
+						--mg-tab-hover-color: rgba(255, 255, 255, 0.92);
+						--mg-tab-active-bg: rgba(255, 255, 255, 0.16);
+						--mg-tab-active-color: #ffffff;
+						--mg-tab-active-border: rgba(255, 255, 255, 0.22);
+						--mg-tab-active-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+						--mg-tab-close-color: rgba(255, 255, 255, 0.5);
+						--mg-tab-close-hover-bg: rgba(255, 255, 255, 0.2);
+						--mg-tab-close-hover-color: #ffffff;
+						--mg-toast-bg: rgba(28, 28, 32, 0.92);
+						--mg-toast-border: rgba(255, 255, 255, 0.16);
+						--mg-toast-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+						--mg-toast-title: #ffffff;
+						--mg-toast-body: rgba(255, 255, 255, 0.85);
+						--mg-toast-muted: rgba(255, 255, 255, 0.5);
+						--mg-toast-btn-sec-bg: rgba(255, 255, 255, 0.1);
+						--mg-toast-btn-sec-color: rgba(255, 255, 255, 0.7);
+						--mg-close-btn-color: rgba(255, 255, 255, 0.45);
+						--mg-close-btn-hover-bg: rgba(255, 255, 255, 0.15);
+						--mg-close-btn-hover-color: #ffffff;
+						--mg-spinner-track: rgba(255, 255, 255, 0.25);
+						--mg-select-bg: rgba(255, 255, 255, 0.1);
+						--mg-select-border: rgba(255, 255, 255, 0.16);
+						--mg-select-color: #ffffff;
+					}
+
+					@media (prefers-color-scheme: light) {
+						:root {
+							--mg-topbar-bg: rgba(246, 246, 248, 0.94);
+							--mg-topbar-border: rgba(0, 0, 0, 0.09);
+							--mg-topbar-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+							--mg-btn-color: rgba(0, 0, 0, 0.65);
+							--mg-btn-hover-bg: rgba(0, 0, 0, 0.08);
+							--mg-btn-hover-color: #000000;
+							--mg-omni-bg: rgba(0, 0, 0, 0.05);
+							--mg-omni-border: rgba(0, 0, 0, 0.1);
+							--mg-omni-text: #1d1d1f;
+							--mg-omni-icon: rgba(0, 0, 0, 0.45);
+							--mg-omni-focus-bg: #ffffff;
+							--mg-omni-focus-border: rgba(0, 113, 227, 0.6);
+							--mg-omni-focus-ring: rgba(0, 113, 227, 0.12);
+							--mg-strip-bg: rgba(0, 0, 0, 0.05);
+							--mg-strip-border: rgba(0, 0, 0, 0.08);
+							--mg-tab-color: rgba(0, 0, 0, 0.65);
+							--mg-tab-hover-bg: rgba(0, 0, 0, 0.06);
+							--mg-tab-hover-color: #000000;
+							--mg-tab-active-bg: #ffffff;
+							--mg-tab-active-color: #1d1d1f;
+							--mg-tab-active-border: rgba(0, 0, 0, 0.12);
+							--mg-tab-active-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+							--mg-tab-close-color: rgba(0, 0, 0, 0.45);
+							--mg-tab-close-hover-bg: rgba(0, 0, 0, 0.1);
+							--mg-tab-close-hover-color: #000000;
+							--mg-toast-bg: rgba(255, 255, 255, 0.96);
+							--mg-toast-border: rgba(0, 0, 0, 0.12);
+							--mg-toast-shadow: 0 10px 32px rgba(0, 0, 0, 0.16);
+							--mg-toast-title: #1d1d1f;
+							--mg-toast-body: #3a3a3c;
+							--mg-toast-muted: rgba(0, 0, 0, 0.5);
+							--mg-toast-btn-sec-bg: rgba(0, 0, 0, 0.06);
+							--mg-toast-btn-sec-color: rgba(0, 0, 0, 0.75);
+							--mg-close-btn-color: rgba(0, 0, 0, 0.45);
+							--mg-close-btn-hover-bg: rgba(0, 0, 0, 0.08);
+							--mg-close-btn-hover-color: #000000;
+							--mg-spinner-track: rgba(0, 0, 0, 0.15);
+							--mg-select-bg: rgba(0, 0, 0, 0.05);
+							--mg-select-border: rgba(0, 0, 0, 0.12);
+							--mg-select-color: #1d1d1f;
+						}
+					}
+
+					/* 顶栏: 类似 gorex titleBar (高度 44px, 交通灯避让 88px, 毛玻璃底板) */
 					#mg-chrome-topbar {
 						position: fixed !important;
 						top: 0 !important;
@@ -366,57 +539,15 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						align-items: center !important;
 						gap: 10px !important;
 						z-index: 2147483647 !important;
-						background: rgba(28, 28, 32, 0.85) !important;
+						background: var(--mg-topbar-bg) !important;
 						backdrop-filter: blur(28px) saturate(190%) !important;
 						-webkit-backdrop-filter: blur(28px) saturate(190%) !important;
-						border-bottom: 0.5px solid rgba(255, 255, 255, 0.08) !important;
+						border-bottom: 0.5px solid var(--mg-topbar-border) !important;
+						box-shadow: var(--mg-topbar-shadow) !important;
 						user-select: none !important;
 						-webkit-app-region: drag !important;
 						box-sizing: border-box !important;
 						font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif !important;
-					}
-
-					/* 适配系统浅色模式 */
-					@media (prefers-color-scheme: light) {
-						#mg-chrome-topbar {
-							background: rgba(246, 246, 248, 0.88) !important;
-							border-bottom: 0.5px solid rgba(0, 0, 0, 0.08) !important;
-						}
-						.mg-icon-btn, .mg-new-tab-btn {
-							color: rgba(0, 0, 0, 0.65) !important;
-						}
-						.mg-icon-btn:hover, .mg-new-tab-btn:hover {
-							background: rgba(0, 0, 0, 0.08) !important;
-							color: #000000 !important;
-						}
-						.mg-omnibox-wrap {
-							background: rgba(0, 0, 0, 0.05) !important;
-							border-color: rgba(0, 0, 0, 0.1) !important;
-						}
-						.mg-omnibox-wrap:focus-within {
-							background: rgba(0, 0, 0, 0.08) !important;
-							border-color: rgba(0, 0, 0, 0.25) !important;
-							box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.04) !important;
-						}
-						.mg-omnibox-input {
-							color: #1d1d1f !important;
-						}
-						.mg-tab-strip {
-							background: rgba(0, 0, 0, 0.04) !important;
-							border-color: rgba(0, 0, 0, 0.06) !important;
-						}
-						.mg-tab-item {
-							color: rgba(0, 0, 0, 0.65) !important;
-						}
-						.mg-tab-item:hover {
-							background: rgba(0, 0, 0, 0.06) !important;
-							color: #000000 !important;
-						}
-						.mg-tab-item.active {
-							background: rgba(0, 0, 0, 0.12) !important;
-							color: #000000 !important;
-							border-color: rgba(0, 0, 0, 0.15) !important;
-						}
 					}
 
 					/* 顶栏内控件不触发窗口拖拽 */
@@ -431,7 +562,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						display: flex;
 						align-items: center;
 						gap: 4px;
-						margin-left: 4px !important;
+						margin-left: 10px !important;
 						flex-shrink: 0;
 					}
 					.mg-icon-btn {
@@ -440,7 +571,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						border-radius: 7px;
 						border: none;
 						background: transparent;
-						color: rgba(255, 255, 255, 0.7);
+						color: var(--mg-btn-color) !important;
 						display: flex;
 						align-items: center;
 						justify-content: center;
@@ -450,8 +581,8 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						font-weight: 500;
 					}
 					.mg-icon-btn:hover {
-						background: rgba(255, 255, 255, 0.12);
-						color: #ffffff;
+						background: var(--mg-btn-hover-bg) !important;
+						color: var(--mg-btn-hover-color) !important;
 					}
 
 					/* 右上角操作区 (刷新与新建标签) */
@@ -466,8 +597,8 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 					.mg-omnibox-wrap {
 						width: 220px;
 						height: 28px;
-						background: rgba(255, 255, 255, 0.07);
-						border: 1px solid rgba(255, 255, 255, 0.12);
+						background: var(--mg-omni-bg) !important;
+						border: 1px solid var(--mg-omni-border) !important;
 						border-radius: 14px;
 						display: flex;
 						align-items: center;
@@ -480,18 +611,18 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 					}
 					.mg-omnibox-wrap:focus-within {
 						width: min(560px, calc(220px + 36vw)) !important;
-						background: rgba(255, 255, 255, 0.12) !important;
-						border-color: rgba(255, 255, 255, 0.3) !important;
-						box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06) !important;
+						background: var(--mg-omni-focus-bg) !important;
+						border-color: var(--mg-omni-focus-border) !important;
+						box-shadow: 0 0 0 3px var(--mg-omni-focus-ring) !important;
 					}
 
-					/* 输入框文字渐进模糊遮罩: 左侧清晰锐利，仅右侧显示不全时渐变淡出 */
+					/* 输入框文字渐进模糊遮罩 */
 					.mg-omnibox-input {
 						flex: 1;
 						background: transparent;
 						border: none;
 						outline: none;
-						color: #ffffff;
+						color: var(--mg-omni-text) !important;
 						font-size: 12px;
 						font-family: inherit;
 						width: 100%;
@@ -499,7 +630,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						mask-image: linear-gradient(to right, black calc(100% - 22px), transparent 100%);
 					}
 
-					/* Gorex 风格多标签栏轨道 (内外圆角同心切合: 16px = 14px + 2px) */
+					/* Gorex 风格多标签栏轨道 */
 					.mg-tab-strip {
 						flex: 1;
 						display: flex;
@@ -508,8 +639,8 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						height: 32px;
 						padding: 2px !important;
 						border-radius: 16px;
-						background: rgba(255, 255, 255, 0.04);
-						border: 0.5px solid rgba(255, 255, 255, 0.06);
+						background: var(--mg-strip-bg) !important;
+						border: 0.5px solid var(--mg-strip-border) !important;
 						overflow-x: auto;
 						overflow-y: hidden;
 						min-width: 0;
@@ -529,7 +660,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						align-items: center;
 						gap: 6px;
 						font-size: 12px;
-						color: rgba(255, 255, 255, 0.65);
+						color: var(--mg-tab-color) !important;
 						cursor: pointer;
 						transition: all 0.18s ease;
 						flex-shrink: 1;
@@ -537,24 +668,36 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						border: 0.5px solid transparent;
 					}
 					.mg-tab-item:hover {
-						background: rgba(255, 255, 255, 0.08);
-						color: rgba(255, 255, 255, 0.9);
+						background: var(--mg-tab-hover-bg) !important;
+						color: var(--mg-tab-hover-color) !important;
 					}
 					.mg-tab-item.active {
-						background: rgba(255, 255, 255, 0.16) !important;
-						color: #ffffff !important;
-						border-color: rgba(255, 255, 255, 0.22) !important;
-						box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25) !important;
+						background: var(--mg-tab-active-bg) !important;
+						color: var(--mg-tab-active-color) !important;
+						border-color: var(--mg-tab-active-border) !important;
+						box-shadow: var(--mg-tab-active-shadow) !important;
 						font-weight: 500;
 					}
 
-					/* 标签标题超出渐变淡出 */
+					/* 标签标题超出渐变淡出 (显式指定文字色彩，杜绝宿主页面全局 CSS 污染) */
 					.mg-tab-title {
 						flex: 1;
 						white-space: nowrap;
 						overflow: hidden;
+						color: var(--mg-tab-color) !important;
+						font-size: 12px !important;
+						font-weight: 500 !important;
+						line-height: 1.2 !important;
+						font-family: inherit !important;
 						-webkit-mask-image: linear-gradient(to right, black calc(100% - 16px), transparent 100%);
 						mask-image: linear-gradient(to right, black calc(100% - 16px), transparent 100%);
+					}
+					.mg-tab-item.active .mg-tab-title {
+						color: var(--mg-tab-active-color) !important;
+						font-weight: 600 !important;
+					}
+					.mg-tab-item:hover .mg-tab-title {
+						color: var(--mg-tab-hover-color) !important;
 					}
 
 					/* 标签关闭按钮 */
@@ -566,7 +709,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						align-items: center;
 						justify-content: center;
 						font-size: 11px;
-						color: rgba(255, 255, 255, 0.5);
+						color: var(--mg-tab-close-color) !important;
 						opacity: 0;
 						transition: opacity 0.15s, background 0.15s;
 					}
@@ -575,8 +718,8 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						opacity: 1;
 					}
 					.mg-tab-close:hover {
-						background: rgba(255, 255, 255, 0.2);
-						color: #ffffff;
+						background: var(--mg-tab-close-hover-bg) !important;
+						color: var(--mg-tab-close-hover-color) !important;
 					}
 
 					/* 嗅探绿点 (呼吸灯脉冲效果) */
@@ -602,7 +745,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						border-radius: 8px;
 						border: none;
 						background: transparent;
-						color: rgba(255, 255, 255, 0.7);
+						color: var(--mg-btn-color) !important;
 						display: flex;
 						align-items: center;
 						justify-content: center;
@@ -611,8 +754,30 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						flex-shrink: 0;
 					}
 					.mg-new-tab-btn:hover, .mg-reload-btn:hover {
-						background: rgba(255, 255, 255, 0.12);
-						color: #ffffff;
+						background: var(--mg-btn-hover-bg) !important;
+						color: var(--mg-btn-hover-color) !important;
+					}
+
+					/* 统一小关闭按钮 (适配深浅模式) */
+					.mg-close-btn {
+						width: 20px;
+						height: 20px;
+						border-radius: 10px;
+						border: none;
+						background: transparent;
+						color: var(--mg-close-btn-color) !important;
+						font-size: 13px;
+						display: flex;
+						align-items: center;
+						justify-content: center;
+						cursor: pointer;
+						line-height: 1;
+						transition: all 0.15s ease;
+						padding: 0;
+					}
+					.mg-close-btn:hover {
+						background: var(--mg-close-btn-hover-bg) !important;
+						color: var(--mg-close-btn-hover-color) !important;
 					}
 
 					/* 浏览器右下角浮动媒体嗅探卡片 (Toast Modal) */
@@ -623,11 +788,11 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						width: 330px !important;
 						padding: 14px 16px !important;
 						border-radius: 12px !important;
-						background: rgba(28, 28, 32, 0.88) !important;
+						background: var(--mg-toast-bg) !important;
 						backdrop-filter: blur(28px) saturate(190%) !important;
 						-webkit-backdrop-filter: blur(28px) saturate(190%) !important;
-						border: 0.5px solid rgba(255, 255, 255, 0.16) !important;
-						box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5) !important;
+						border: 0.5px solid var(--mg-toast-border) !important;
+						box-shadow: var(--mg-toast-shadow) !important;
 						z-index: 2147483647 !important;
 						box-sizing: border-box !important;
 						font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif !important;
@@ -641,12 +806,29 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						from { opacity: 0; transform: translateY(16px) scale(0.96); }
 						to { opacity: 1; transform: translateY(0) scale(1); }
 					}
+					#mg-sniff-toast-card .mg-toast-title {
+						color: var(--mg-toast-title) !important;
+					}
+					#mg-sniff-toast-card .mg-toast-body {
+						color: var(--mg-toast-body) !important;
+					}
+					#mg-sniff-toast-card .mg-toast-muted {
+						color: var(--mg-toast-muted) !important;
+					}
+					#mg-sniff-toast-card .mg-btn-secondary {
+						background: var(--mg-toast-btn-sec-bg) !important;
+						color: var(--mg-toast-btn-sec-color) !important;
+					}
+					#mg-sniff-toast-card .mg-btn-secondary:hover {
+						opacity: 0.85;
+					}
+
 					/* 动态旋转菊花 Loading 动画 */
 					.mg-spinner {
 						width: 14px;
 						height: 14px;
-						border: 2px solid rgba(255, 255, 255, 0.25);
-						border-top-color: #0071e3;
+						border: 2px solid var(--mg-spinner-track) !important;
+						border-top-color: #0071e3 !important;
 						border-radius: 50%;
 						animation: mgSpinAnim 0.8s linear infinite;
 						display: inline-block;
@@ -660,41 +842,47 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 					.mg-format-select {
 						height: 28px;
 						border-radius: 6px;
-						background: rgba(255, 255, 255, 0.1);
-						border: 1px solid rgba(255, 255, 255, 0.16);
-						color: #ffffff;
+						background: var(--mg-select-bg) !important;
+						border: 1px solid var(--mg-select-border) !important;
+						color: var(--mg-select-color) !important;
 						font-size: 11px;
 						padding: 0 8px;
 						outline: none;
 						width: 100%;
-					}
-					@media (prefers-color-scheme: light) {
-						.mg-spinner {
-							border-color: rgba(0, 0, 0, 0.15);
-							border-top-color: #0071e3;
-						}
-						.mg-format-select {
-							background: rgba(0, 0, 0, 0.05);
-							border-color: rgba(0, 0, 0, 0.12);
-							color: #1d1d1f;
-						}
-						#mg-sniff-toast-card {
-							background: rgba(255, 255, 255, 0.94) !important;
-							border: 0.5px solid rgba(0, 0, 0, 0.12) !important;
-							box-shadow: 0 10px 32px rgba(0, 0, 0, 0.16) !important;
-						}
-						#mg-sniff-toast-card .mg-toast-title {
-							color: #1d1d1f !important;
-						}
-						#mg-sniff-toast-card .mg-toast-body {
-							color: #3a3a3c !important;
-						}
 					}
 				` + "`" + `;
 				document.documentElement.appendChild(styleEl);
 			}
 
 			// 3. 构建/更新顶栏 DOM
+			const safeSetHTML = (el, htmlStr) => {
+				try {
+					if (window.trustedTypes) {
+						if (!window.__mg_tt_policy) {
+							try {
+								window.__mg_tt_policy = window.trustedTypes.createPolicy('mediago', { createHTML: s => s });
+							} catch (e) {
+								window.__mg_tt_policy = window.trustedTypes.defaultPolicy;
+							}
+						}
+						if (window.__mg_tt_policy) {
+							el.innerHTML = window.__mg_tt_policy.createHTML(htmlStr);
+							return;
+						}
+					}
+				} catch (e) {}
+				try {
+					el.innerHTML = htmlStr;
+				} catch (e) {
+					try {
+						const parser = new DOMParser();
+						const doc = parser.parseFromString(htmlStr, 'text/html');
+						while (el.firstChild) el.removeChild(el.firstChild);
+						while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+					} catch (e2) {}
+				}
+			};
+
 			let bar = document.getElementById('mg-chrome-topbar');
 			if (!bar) {
 				bar = document.createElement('div');
@@ -715,7 +903,7 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				` + "`" + `;
 			}).join('');
 
-			bar.innerHTML = ` + "`" + `
+			safeSetHTML(bar, ` + "`" + `
 				<div class="mg-nav-actions">
 					<button class="mg-icon-btn mg-interactive" id="mg-nav-back" title="后退">‹</button>
 					<button class="mg-icon-btn mg-interactive" id="mg-nav-forward" title="前进">›</button>
@@ -734,13 +922,13 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 						</svg>
 					</button>
 					<button class="mg-new-tab-btn mg-interactive" id="mg-new-tab" title="新建标签页 (+)">
-						<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
 							<line x1="12" y1="5" x2="12" y2="19"></line>
 							<line x1="5" y1="12" x2="19" y2="12"></line>
 						</svg>
 					</button>
 				</div>
-			` + "`" + `;
+			` + "`" + `);
 
 			// 4. 事件绑定
 			const backBtn = bar.querySelector('#mg-nav-back');
@@ -753,18 +941,23 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 			forwardBtn.onclick = () => window.history.forward();
 			reloadBtn.onclick = () => window.location.reload();
 
-			input.onkeydown = (e) => {
-				if (e.key === 'Enter') {
-					let val = input.value.trim();
-					if (!val) return;
-					if (!val.includes('.') && !val.startsWith('http')) {
-						val = 'https://search.bilibili.com/all?keyword=' + encodeURIComponent(val);
-					} else if (!val.startsWith('http://') && !val.startsWith('https://')) {
-						val = 'https://' + val;
-					}
-					window.location.href = val;
+			const triggerNav = () => {
+				let val = input.value.trim();
+				if (!val) return;
+				if (!val.includes('.') && !val.startsWith('http')) {
+					val = 'https://search.bilibili.com/all?keyword=' + encodeURIComponent(val);
+				} else if (!val.startsWith('http://') && !val.startsWith('https://')) {
+					val = 'https://' + val;
 				}
+				window.location.href = val;
 			};
+
+			input.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter' || e.keyCode === 13 || e.which === 13) {
+					e.preventDefault();
+					triggerNav();
+				}
+			});
 
 			// 新建标签页
 			newTabBtn.onclick = () => {
@@ -817,6 +1010,23 @@ func (m *Manager) injectGorexTopBar(page *mygo.Page) {
 				};
 			});
 
+			// 5. 顶栏守护机制 (保证在 YouTube 等单页应用重排时顶栏不丢失)
+			if (!window.__mg_topbar_watcher_installed) {
+				window.__mg_topbar_watcher_installed = true;
+				window.addEventListener('yt-navigate-finish', () => {
+					const curBar = document.getElementById('mg-chrome-topbar');
+					if (!curBar && document.documentElement) {
+						document.documentElement.appendChild(bar);
+					}
+				});
+				window.addEventListener('popstate', () => {
+					const curBar = document.getElementById('mg-chrome-topbar');
+					if (!curBar && document.documentElement) {
+						document.documentElement.appendChild(bar);
+					}
+				});
+			}
+
 		} catch (e) {
 			console.error('injectGorexTopBar error:', e);
 		}
@@ -860,9 +1070,10 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 
 	jsScript := `(() => {
 		const urls = new Set();
-		// 1. 查找 video 标签与 source
+		// 1. 查找 video 标签与 source (包括 currentSrc)
 		document.querySelectorAll('video').forEach(v => {
 			if (v.src && !v.src.startsWith('blob:')) urls.add(v.src);
+			if (v.currentSrc && !v.currentSrc.startsWith('blob:')) urls.add(v.currentSrc);
 			v.querySelectorAll('source').forEach(s => {
 				if (s.src && !s.src.startsWith('blob:')) urls.add(s.src);
 			});
@@ -872,7 +1083,7 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 			const resources = window.performance.getEntriesByType('resource');
 			for (const r of resources) {
 				const u = r.name;
-				if (u.includes('.m3u8') || u.includes('.mp4')) {
+				if (u.includes('.m3u8') || u.includes('.mp4') || r.initiatorType === 'video' || r.initiatorType === 'media') {
 					urls.add(u);
 				}
 			}
@@ -922,7 +1133,12 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 		strings.Contains(res.URL, "youtube.com/watch") ||
 		strings.Contains(res.URL, "douyin.com/video") ||
 		strings.Contains(res.URL, "kuaishou.com/short-video") ||
-		strings.Contains(res.URL, "weibo.com/")
+		strings.Contains(res.URL, "weibo.com/") ||
+		strings.Contains(res.URL, "x.com/") ||
+		strings.Contains(res.URL, "twitter.com/") ||
+		strings.Contains(res.URL, "threads.com/") ||
+		strings.Contains(res.URL, "threads.net/") ||
+		strings.Contains(res.URL, "facebook.com/")
 
 	if isKnownVideoPage && res.Title != "" && !strings.HasPrefix(res.Title, "哔哩哔哩 (゜-゜)つロ 干杯~") {
 		mediaFoundCount++
@@ -980,6 +1196,34 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 				window.__mg_first_direct_url = '%s';
 				window.__mg_clean_title = '%s';
 
+				const safeSetHTML = (el, htmlStr) => {
+					try {
+						if (window.trustedTypes) {
+							if (!window.__mg_tt_policy) {
+								try {
+									window.__mg_tt_policy = window.trustedTypes.createPolicy('mediago', { createHTML: s => s });
+								} catch (e) {
+									window.__mg_tt_policy = window.trustedTypes.defaultPolicy;
+								}
+							}
+							if (window.__mg_tt_policy) {
+								el.innerHTML = window.__mg_tt_policy.createHTML(htmlStr);
+								return;
+							}
+						}
+					} catch (e) {}
+					try {
+						el.innerHTML = htmlStr;
+					} catch (e) {
+						try {
+							const parser = new DOMParser();
+							const doc = parser.parseFromString(htmlStr, 'text/html');
+							while (el.firstChild) el.removeChild(el.firstChild);
+							while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+						} catch (e2) {}
+					}
+				};
+
 				// 挂载资源解析结果回调
 				window.__mg_render_parsed_ui = (title, fmts, episodesCount) => {
 					let toast = document.getElementById('mg-sniff-toast-card');
@@ -991,25 +1235,25 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 						optionsHtml = '<option value="">默认最优规格</option>';
 					}
 					const epBadge = episodesCount > 1 ? `+"`"+`<span style="font-size:10px;background:rgba(0,113,227,0.15);color:#0071e3;padding:2px 6px;border-radius:4px;font-weight:600;">共 ${episodesCount} 集</span>`+"`"+` : '';
-					toast.innerHTML = `+"`"+`
+					safeSetHTML(toast, `+"`"+`
 						<div style="display:flex;align-items:center;justify-content:space-between;">
 							<div style="display:flex;align-items:center;gap:6px;">
 								<span style="font-size:13px;">🎬</span>
 								<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">资源解析就绪</span>
 								${epBadge}
 							</div>
-							<button id="mg-sniff-close" style="border:none;background:transparent;color:rgba(255,255,255,0.45);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;">✕</button>
+							<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
 						</div>
 						<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="${title}">${title}</div>
 						<div style="display:flex;flex-direction:column;gap:5px;margin-top:2px;">
-							<label style="font-size:11px;color:rgba(255,255,255,0.6);">选择清晰度规格:</label>
+							<label class="mg-toast-muted" style="font-size:11px;color:rgba(255,255,255,0.6);">选择清晰度规格:</label>
 							<select class="mg-format-select" id="mg-card-fmt">${optionsHtml}</select>
 						</div>
 						<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px;">
-							<button id="mg-sniff-cancel" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">取消</button>
+							<button class="mg-btn-secondary" id="mg-sniff-cancel" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">取消</button>
 							<button id="mg-sniff-confirm-btn" style="height:26px;padding:0 14px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">开始下载</button>
 						</div>
-					`+"`"+`;
+					`+"`"+`);
 					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
 					toast.querySelector('#mg-sniff-cancel').onclick = () => toast.remove();
 					toast.querySelector('#mg-sniff-confirm-btn').onclick = () => {
@@ -1018,31 +1262,28 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 					};
 				};
 
-				// 挂载解析失败回调 (支持直链兜底)
+				// 挂载解析失败回调 (尺寸与正在解析文案容器一致，紧凑小巧)
 				window.__mg_render_extract_error = (errMsg) => {
 					let toast = document.getElementById('mg-sniff-toast-card');
 					if (!toast) return;
 					const directURL = window.__mg_first_direct_url || '';
 					let fallbackHtml = '';
 					if (directURL) {
-						fallbackHtml = '<button id="mg-sniff-direct-btn" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:#34c759;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">直接下载嗅探直链</button>';
+						fallbackHtml = '<button id="mg-sniff-direct-btn" style="height:22px;padding:0 8px;border-radius:5px;border:none;background:#34c759;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">直链下载</button>';
 					}
-					toast.innerHTML = `+"`"+`
-						<div style="display:flex;align-items:center;justify-content:space-between;">
-							<div style="display:flex;align-items:center;gap:6px;">
-								<span style="font-size:13px;">⚠️</span>
-								<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ff453a;">视频解析受限</span>
+					safeSetHTML(toast, `+"`"+`
+						<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">
+							<div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+								<span style="font-size:13px;flex-shrink:0;">⚠️</span>
+								<span class="mg-toast-limit-text" style="font-size:12px;color:#ff453a;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${errMsg}">页面视频解析受限</span>
 							</div>
-							<button id="mg-sniff-close" style="border:none;background:transparent;color:rgba(255,255,255,0.45);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;">✕</button>
+							<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:8px;">
+								${fallbackHtml}
+								<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
+							</div>
 						</div>
-						<div style="font-size:11px;line-height:1.4;color:rgba(255,255,255,0.7);">${errMsg}</div>
-						<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px;">
-							<button id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>
-							${fallbackHtml}
-						</div>
-					`+"`"+`;
+					`+"`"+`);
 					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
-					toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
 					if (toast.querySelector('#mg-sniff-direct-btn')) {
 						toast.querySelector('#mg-sniff-direct-btn').onclick = () => {
 							window.location.href = 'mediago-sniff://direct-download?directUrl=' + encodeURIComponent(directURL) + '&title=' + encodeURIComponent(window.__mg_clean_title || '嗅探直链视频');
@@ -1054,7 +1295,7 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 				window.__mg_render_success = () => {
 					let toast = document.getElementById('mg-sniff-toast-card');
 					if (!toast) return;
-					toast.innerHTML = '<div style="font-size:12px;color:#34c759;font-weight:600;padding:10px 0;text-align:center;">✓ 已加入下载队列，在主窗口查看进度</div>';
+					safeSetHTML(toast, '<div style="font-size:12px;color:#34c759;font-weight:600;padding:6px 0;text-align:center;">✓ 已加入下载队列，在主窗口查看进度</div>');
 					setTimeout(() => { if (toast) toast.remove(); }, 2200);
 				};
 
@@ -1065,35 +1306,40 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 					toast.id = 'mg-sniff-toast-card';
 					document.documentElement.appendChild(toast);
 				}
-				toast.innerHTML = `+"`"+`
+				safeSetHTML(toast, `+"`"+`
 					<div style="display:flex;align-items:center;justify-content:space-between;">
 						<div style="display:flex;align-items:center;gap:6px;">
 							<div class="mg-pulse-dot"></div>
 							<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">发现可下载媒体</span>
 						</div>
-						<button id="mg-sniff-close" style="border:none;background:transparent;color:rgba(255,255,255,0.45);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;">✕</button>
+						<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
 					</div>
 					<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">%s</div>
 					<div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;">
-						<span style="font-size:10px;color:rgba(255,255,255,0.5);">检测到 %d 个媒体资源</span>
+						<span class="mg-toast-muted" style="font-size:10px;color:rgba(255,255,255,0.5);">检测到 %d 个媒体资源</span>
 						<div style="display:flex;align-items:center;gap:8px;">
-							<button id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>
+							<button class="mg-btn-secondary" id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>
 							<button id="mg-sniff-download-btn" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">立即下载</button>
 						</div>
 					</div>
-				`+"`"+`;
+				`+"`"+`);
 				toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
 				toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
 				toast.querySelector('#mg-sniff-download-btn').onclick = () => {
-					// 原地切换为解析中 UI (带动态旋转菊花)
-					toast.innerHTML = `+"`"+`
-						<div style="display:flex;align-items:center;gap:8px;padding:8px 0;">
-							<div class="mg-spinner"></div>
-							<span style="font-size:12px;color:#0071e3;font-weight:500;">正在深入解析视频规格与清晰度...</span>
+					// 原地切换为解析中 UI (带动态旋转菊花，精简文案)
+					safeSetHTML(toast, `+"`"+`
+						<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">
+							<div style="display:flex;align-items:center;gap:8px;">
+								<div class="mg-spinner"></div>
+								<span style="font-size:12px;color:#0071e3;font-weight:500;">正在解析视频...</span>
+							</div>
+							<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
 						</div>
-					`+"`"+`;
-					// 触发后台深度解析
-					window.location.href = 'mediago-sniff://extract?url=' + encodeURIComponent('%s');
+					`+"`"+`);
+					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+					// 触发后台深度解析，优先传当前真实页面 href
+					const targetURL = window.location.href || '%s';
+					window.location.href = 'mediago-sniff://extract?url=' + encodeURIComponent(targetURL);
 				};
 			} catch (e) {}
 		})()`, escapedDirect, escapedTitle, escapedTitle, mediaFoundCount, escapedURL)
