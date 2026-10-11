@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"mediago/internal/discovery"
 )
 
 // Library 本地媒体资源库管理器
@@ -44,20 +45,10 @@ func NewLibrary(dir ...string) (*Library, error) {
 	thumbDir := filepath.Join(home, ".mediago", "thumbnails")
 	_ = os.MkdirAll(thumbDir, 0755)
 
-	// 探测 ffmpeg 路径
-	ffPath := "/opt/homebrew/bin/ffmpeg"
-	if _, err := os.Stat(ffPath); err != nil {
-		if p, err := exec.LookPath("ffmpeg"); err == nil {
-			ffPath = p
-		} else {
-			ffPath = "ffmpeg"
-		}
-	}
-
 	return &Library{
 		baseDir:    base,
 		thumbDir:   thumbDir,
-		ffmpegPath: ffPath,
+		ffmpegPath: discovery.FindFFmpeg(),
 	}, nil
 }
 
@@ -104,10 +95,18 @@ func (l *Library) GetThumbnail(filePath string, onReady func()) *ui.Bitmap {
 	go func() {
 		defer l.inProgress.Delete(filePath)
 
+		ff := l.ffmpegPath
+		if ff == "" {
+			ff = discovery.FindFFmpeg()
+		}
+		if ff == "" {
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, l.ffmpegPath,
+		cmd := exec.CommandContext(ctx, ff,
 			"-ss", "00:00:00",
 			"-i", filePath,
 			"-vframes", "1",

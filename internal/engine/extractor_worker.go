@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"mediago/internal/discovery"
 	"mediago/internal/model"
 )
 
@@ -22,26 +23,7 @@ type ExtractorWorkerEngine struct {
 
 // NewExtractorWorkerEngine 初始化引擎
 func NewExtractorWorkerEngine() *ExtractorWorkerEngine {
-	candidatePaths := []string{
-		"/Users/wuzhiying/.pyenv/shims/yt-dlp",
-		"/opt/homebrew/bin/yt-dlp",
-		"/usr/local/bin/yt-dlp",
-	}
-
-	selected := ""
-	for _, p := range candidatePaths {
-		if _, err := os.Stat(p); err == nil {
-			selected = p
-			break
-		}
-	}
-	if selected == "" {
-		if p, err := exec.LookPath("yt-dlp"); err == nil {
-			selected = p
-		}
-	}
-
-	return &ExtractorWorkerEngine{binPath: selected}
+	return &ExtractorWorkerEngine{binPath: discovery.FindYtDlp()}
 }
 
 // 正则解析 yt-dlp 的下载输出行: [download]  45.2% of ~101.00MiB at  3.50MiB/s ETA 00:15
@@ -53,7 +35,10 @@ var (
 // Download 执行音视频流并发下载与 ffmpeg 自动合并
 func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, opts DownloadOptions) error {
 	if e.binPath == "" {
-		return fmt.Errorf("系统未安装可用的 yt-dlp")
+		e.binPath = discovery.FindYtDlp()
+	}
+	if e.binPath == "" {
+		return fmt.Errorf("系统未安装可用的 yt-dlp，请在偏好设置中一键下载安装")
 	}
 
 	if err := os.MkdirAll(task.OutputDir, 0755); err != nil {
@@ -82,8 +67,13 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 		"-f", formatSelector,
 		"--merge-output-format", "mp4",
 		"-o", outputTemplate,
-		task.SourceURL,
 	}
+
+	if ff := discovery.FindFFmpeg(); ff != "" {
+		args = append(args, "--ffmpeg-location", ff)
+	}
+
+	args = append(args, task.SourceURL)
 
 	cmd := exec.CommandContext(ctx, e.binPath, args...)
 
