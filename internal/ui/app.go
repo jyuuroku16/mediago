@@ -210,7 +210,7 @@ func (app *AppUI) filteredTasks() []*model.Task {
 
 		switch app.currentTab {
 		case "downloading":
-			if t.Status == model.StatusDownloading || t.Status == model.StatusQueued {
+			if t.Status == model.StatusDownloading || t.Status == model.StatusQueued || t.Status == model.StatusRetryWait {
 				result = append(result, t)
 			}
 		case "completed":
@@ -352,7 +352,7 @@ func (app *AppUI) renderSidebar(c *ui.Context, pal Palette) {
 			activeCount := 0
 			app.mu.RLock()
 			for _, t := range app.tasks {
-				if t.Status == model.StatusDownloading {
+				if t.Status == model.StatusDownloading || t.Status == model.StatusRetryWait {
 					activeCount++
 				}
 			}
@@ -658,6 +658,10 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 				statusText = "已暂停"
 				statusBg = pal.WarningLight
 				statusTc = pal.Warning
+			case model.StatusRetryWait:
+				statusText = "重试中"
+				statusBg = pal.WarningLight
+				statusTc = pal.Warning
 			case model.StatusFailed:
 				statusText = "失败"
 				statusBg = pal.DangerLight
@@ -708,16 +712,22 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 				})
 			}
 
-			if t.Status == model.StatusFailed && t.ErrorMsg != "" {
+			if (t.Status == model.StatusFailed || t.Status == model.StatusRetryWait) && t.ErrorMsg != "" {
+				errText := "错误: " + t.ErrorMsg
+				errColor := pal.Danger
+				if t.Status == model.StatusRetryWait {
+					errText = t.ErrorMsg
+					errColor = pal.Warning
+				}
 				ui.Box(c).Width(12)
-				ui.Text(c, "错误: "+t.ErrorMsg).FontSize(11).TextColor(pal.Danger).SingleLine().Grow(1).MinWidth(0)
+				ui.Text(c, errText).FontSize(11).TextColor(errColor).SingleLine().Grow(1).MinWidth(0)
 			}
 
 			ui.Spacer(c)
 
 			// 右侧操作按钮
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				if t.Status == model.StatusDownloading {
+				if t.Status == model.StatusDownloading || t.Status == model.StatusRetryWait {
 					pauseBtn := ui.Button(c, "暂停").FontSize(11)
 					if pauseBtn.Clicked() {
 						_ = app.scheduler.Pause(t.ID)
@@ -1045,20 +1055,47 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 
 			// 底部操作区 (彻底移除多余的取消按钮，右对齐立即开始下载)
 			if app.candidate != nil {
+				// 主按钮文案严格跟随实际选择状态，避免"仅选 3 集却显示全部 41 集"
+				selectedCount := 0
+				for _, ep := range app.candidate.Episodes {
+					if app.selectedEpisodesMap[ep.Index] {
+						selectedCount++
+					}
+				}
+
 				btnText := "立即开始下载"
+				btnDisabled := false
 				if len(app.candidate.Episodes) > 1 {
 					if app.downloadAllEpisodes {
-						btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
+						switch {
+						case selectedCount == 0:
+							btnText = "请先选择分集"
+							btnDisabled = true
+						case selectedCount == len(app.candidate.Episodes):
+							btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
+						default:
+							btnText = fmt.Sprintf("立即批量下载已选 %d 集", selectedCount)
+						}
 					} else {
 						btnText = fmt.Sprintf("立即下载当前集 (P%d)", app.candidate.CurrentPage)
 					}
 				}
+
 				ui.Row(c).Justify(ui.End).Children(func() {
-					confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).Background(pal.Accent).AlignItems(ui.Center)
+					confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).AlignItems(ui.Center)
+					if btnDisabled {
+						confirmBtn.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
+					} else {
+						confirmBtn.Background(pal.Accent)
+					}
 					confirmBtn.Children(func() {
-						ui.Text(c, btnText).FontSize(12).Bold().TextColor(ui.Hex("#ffffff")).SingleLine()
+						btnColor := ui.Hex("#ffffff")
+						if btnDisabled {
+							btnColor = pal.TextMuted
+						}
+						ui.Text(c, btnText).FontSize(12).Bold().TextColor(btnColor).SingleLine()
 					})
-					if confirmBtn.Clicked() {
+					if confirmBtn.Clicked() && !btnDisabled {
 						app.submitCandidate()
 						app.showModal = false
 					}
@@ -1531,6 +1568,8 @@ func (app *AppUI) renderDeleteConfirmModal(c *ui.Context, pal Palette) {
 				}
 			} else if task != nil {
 				switch task.Status {
+				case model.StatusRetryWait:
+					ui.Text(c, "该任务正在等待自动重试，删除将取消本次重试。").FontSize(12).TextColor(pal.Warning)
 				case model.StatusDownloading, model.StatusQueued:
 					ui.Text(c, "该任务正在下载中，删除将立即中断当前下载进度。").FontSize(12).TextColor(pal.Warning)
 				case model.StatusCompleted:

@@ -92,9 +92,21 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // yt-dlp 单行输出可能很长，放宽缓冲上限
 	streamIndex := 0 // 0: 视频流 (权重 88%), 1: 音频流 (权重 12%)
+	var errDetail []string
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// 收集错误行，进程失败时附带到任务错误信息中，便于用户定位失败原因
+		if strings.Contains(line, "ERROR:") {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				errDetail = append(errDetail, trimmed)
+				if len(errDetail) > 3 {
+					errDetail = errDetail[len(errDetail)-3:]
+				}
+			}
+		}
 
 		// 侦测流切换与合并阶段
 		if strings.Contains(line, "[download] Destination:") {
@@ -175,6 +187,9 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if detail := strings.Join(errDetail, "；"); detail != "" {
+			return fmt.Errorf("下载合并进程退出异常: %w；%s", err, detail)
 		}
 		return fmt.Errorf("下载合并进程退出异常: %w", err)
 	}

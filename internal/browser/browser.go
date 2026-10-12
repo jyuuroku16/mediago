@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,15 +106,12 @@ func (m *Manager) Open(initialURL string) {
 
 	m.window = win
 
-	// 拦截关闭事件转为隐藏窗口，保持 WebKit 实例活跃，防止销毁导致会话级 Cookie 丢失，确保极速唤起
-	win.OnClose(func(e *mygo.CloseEvent) {
-		e.PreventDefault()
-		win.Hide()
-	})
-
+	// 关闭浏览器窗口即彻底销毁 WebKit 实例并回收进程资源 (不再拦截关闭转为隐藏驻留)
+	// 登录态由 WKWebView 默认的持久化数据存储负责落盘，重新打开浏览器仍然保留
 	win.OnClosed(func() {
 		m.mu.Lock()
 		m.window = nil
+		m.lastCand = nil
 		m.mu.Unlock()
 	})
 
@@ -121,6 +119,17 @@ func (m *Manager) Open(initialURL string) {
 	if page == nil {
 		return
 	}
+
+	// 拦截 target="_blank" 与 window.open()：一律在内置浏览器窗口内原地打开
+	// (mygo 默认会把 http(s) 新窗口请求交给系统默认浏览器，必须显式覆盖)
+	page.SetWindowOpenHandler(func(req mygo.WindowOpenRequest) *mygo.WindowOptions {
+		u, err := url.Parse(req.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return nil // 非网页协议 (如 bilibili://) 直接忽略，既不弹窗也不外跳
+		}
+		go page.LoadURL(req.URL)
+		return nil // 返回 nil 拒绝弹出原生新窗口
+	})
 
 	// 监听页面导航与加载完成，注入 Gorex 风格顶栏与触发独立媒体嗅探
 	page.OnWillNavigate(func(e *mygo.NavigateEvent) {
@@ -159,9 +168,7 @@ func (m *Manager) Open(initialURL string) {
 					if len([]rune(errStr)) > 35 {
 						errStr = string([]rune(errStr)[:32]) + "..."
 					}
-					escapedErr := strings.ReplaceAll(errStr, `"`, `\"`)
-					escapedErr = strings.ReplaceAll(escapedErr, "\n", " ")
-					script := fmt.Sprintf(`if (window.__mg_render_extract_error) window.__mg_render_extract_error("%s");`, escapedErr)
+					script := fmt.Sprintf(`if (window.__mg_render_extract_error) window.__mg_render_extract_error(%s);`, jsString(errStr))
 					_, _ = page.Eval(script)
 					return
 				}
@@ -184,11 +191,16 @@ func (m *Manager) Open(initialURL string) {
 					})
 				}
 				fb, _ := json.Marshal(fmts)
-				escapedTitle := strings.ReplaceAll(cand.Title, `"`, `\"`)
-				escapedTitle = strings.ReplaceAll(escapedTitle, "\n", " ")
 
-				script := fmt.Sprintf(`if (window.__mg_render_parsed_ui) window.__mg_render_parsed_ui("%s", %s, %d);`,
-					escapedTitle, string(fb), len(cand.Episodes))
+				// 分集列表与当前分 P 一并下发，浏览器内卡片可直接选择分集下载
+				eps := make([]epItem, 0, len(cand.Episodes))
+				for _, ep := range cand.Episodes {
+					eps = append(eps, epItem{I: ep.Index, T: ep.Title})
+				}
+				eb, _ := json.Marshal(eps)
+
+				script := fmt.Sprintf(`if (window.__mg_render_parsed_ui) window.__mg_render_parsed_ui(%s, %s, %s, %d);`,
+					jsString(cand.Title), string(fb), string(eb), cand.CurrentPage)
 				_, _ = page.Eval(script)
 			}()
 			return
@@ -196,18 +208,7 @@ func (m *Manager) Open(initialURL string) {
 
 		if strings.HasPrefix(e.URL, "mediago-sniff://confirm-download") {
 			e.PreventDefault()
-			fmtID := ""
-			if u, err := url.Parse(e.URL); err == nil {
-				fmtID = u.Query().Get("fmtId")
-			}
-			if fmtID == "" {
-				raw := strings.TrimPrefix(e.URL, "mediago-sniff://confirm-download")
-				raw = strings.TrimPrefix(raw, "/")
-				raw = strings.TrimPrefix(raw, "?")
-				if q, err := url.ParseQuery(raw); err == nil {
-					fmtID = q.Get("fmtId")
-				}
-			}
+			fmtID, mode, epsParam := parseConfirmParams(e.URL)
 
 			m.mu.Lock()
 			cand := m.lastCand
@@ -215,55 +216,9 @@ func (m *Manager) Open(initialURL string) {
 			m.mu.Unlock()
 
 			if cand != nil && m.onSubmitTask != nil {
-				var selectedFmt *model.MediaFormat
-				for _, f := range cand.Formats {
-					if f.FormatID == fmtID {
-						selectedFmt = &f
-						break
-					}
+				for _, task := range buildConfirmTasks(cand, fmtID, mode, epsParam, outDir) {
+					m.onSubmitTask(task)
 				}
-				if selectedFmt == nil && len(cand.Formats) > 0 {
-					selectedFmt = &cand.Formats[0]
-				}
-
-				dlURL := cand.SourceURL
-				engineType := model.EngineExtractor
-				ext := "mp4"
-				var totalBytes int64
-				if selectedFmt != nil {
-					if selectedFmt.URL != "" {
-						dlURL = selectedFmt.URL
-					}
-					if selectedFmt.Protocol == "m3u8" {
-						engineType = model.EngineHLS
-					}
-					if selectedFmt.Ext != "" {
-						ext = selectedFmt.Ext
-					}
-					totalBytes = selectedFmt.Filesize
-				}
-
-				cleanTitle := sanitizeFilename(strings.TrimSpace(cand.Title))
-				if cleanTitle == "" {
-					cleanTitle = "视频资源"
-				}
-				fn := fmt.Sprintf("%s.%s", cleanTitle, ext)
-
-				task := &model.Task{
-					ID:             uuid.New().String(),
-					Title:          cleanTitle,
-					SourceURL:      cand.SourceURL,
-					DownloadURL:    dlURL,
-					Engine:         engineType,
-					Status:         model.StatusQueued,
-					TotalBytes:     totalBytes,
-					OutputDir:      outDir,
-					OutputFilename: fn,
-					Priority:       1,
-					CreatedAt:      time.Now(),
-					UpdatedAt:      time.Now(),
-				}
-				m.onSubmitTask(task)
 			}
 			_, _ = page.Eval(`if (window.__mg_render_success) window.__mg_render_success();`)
 			return
@@ -1143,6 +1098,142 @@ type sniffResult struct {
 	Media []string `json:"media"`
 }
 
+// epItem 分集条目 (下发给浏览器内浮动卡片，用于分 P 选择)
+type epItem struct {
+	I int    `json:"i"`
+	T string `json:"t"`
+}
+
+// cardData 浏览器内浮动卡片所需的页面数据 (整体 JSON 注入，避免手工转义引发脚本错误)
+type cardData struct {
+	Direct     string `json:"direct"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	MediaCount int    `json:"mediaCount"`
+}
+
+// parseConfirmParams 解析浏览器卡片"确认下载"自定义协议的查询参数
+// 兼容标准 url.Parse 与原始查询串两种形式；mode 缺省为 current
+func parseConfirmParams(rawURL string) (fmtID, mode, eps string) {
+	mode = "current"
+	read := func(q url.Values) {
+		if v := q.Get("fmtId"); v != "" {
+			fmtID = v
+		}
+		if v := q.Get("mode"); v != "" {
+			mode = v
+		}
+		if v := q.Get("eps"); v != "" {
+			eps = v
+		}
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		read(u.Query())
+	}
+	if fmtID == "" {
+		raw := strings.TrimPrefix(rawURL, "mediago-sniff://confirm-download")
+		raw = strings.TrimPrefix(raw, "/")
+		raw = strings.TrimPrefix(raw, "?")
+		if q, err := url.ParseQuery(raw); err == nil {
+			read(q)
+		}
+	}
+	return fmtID, mode, eps
+}
+
+// buildConfirmTasks 根据浏览器卡片的确认参数构建下载任务
+// mode=batch 时按 eps 勾选的分 P 逐集建任务 (对齐主窗口批量下载)，否则仅建当前分 P 的单个任务
+func buildConfirmTasks(cand *model.Candidate, fmtID, mode, epsParam, outDir string) []*model.Task {
+	if cand == nil {
+		return nil
+	}
+
+	var selectedFmt *model.MediaFormat
+	for i := range cand.Formats {
+		if cand.Formats[i].FormatID == fmtID {
+			selectedFmt = &cand.Formats[i]
+			break
+		}
+	}
+	if selectedFmt == nil && len(cand.Formats) > 0 {
+		selectedFmt = &cand.Formats[0]
+	}
+
+	dlURL := cand.SourceURL
+	engineType := model.EngineExtractor
+	ext := "mp4"
+	var totalBytes int64
+	if selectedFmt != nil {
+		if selectedFmt.Protocol == "extractor" && selectedFmt.FormatID != "" {
+			// extractor 协议下 FormatID 即 yt-dlp 选择器，交由引擎按该规格下载
+			dlURL = selectedFmt.FormatID
+		} else if selectedFmt.URL != "" {
+			dlURL = selectedFmt.URL
+		}
+		if selectedFmt.Protocol == "m3u8" {
+			engineType = model.EngineHLS
+		}
+		if selectedFmt.Ext != "" {
+			ext = selectedFmt.Ext
+		}
+		totalBytes = selectedFmt.Filesize
+	}
+
+	cleanTitle := sanitizeFilename(strings.TrimSpace(cand.Title))
+	if cleanTitle == "" {
+		cleanTitle = "视频资源"
+	}
+
+	newTask := func(sourceURL, taskTitle string) *model.Task {
+		if sourceURL == "" {
+			sourceURL = cand.SourceURL
+		}
+		now := time.Now()
+		return &model.Task{
+			ID:             uuid.New().String(),
+			Title:          taskTitle,
+			SourceURL:      sourceURL,
+			DownloadURL:    dlURL,
+			Engine:         engineType,
+			Status:         model.StatusQueued,
+			TotalBytes:     totalBytes,
+			OutputDir:      outDir,
+			OutputFilename: fmt.Sprintf("%s.%s", sanitizeFilename(taskTitle), ext),
+			Priority:       1,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+	}
+
+	// 批量模式: 按用户勾选的分 P 逐集创建任务
+	if mode == "batch" && len(cand.Episodes) > 0 {
+		selected := make(map[int]bool)
+		for _, part := range strings.Split(epsParam, ",") {
+			if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil && n > 0 {
+				selected[n] = true
+			}
+		}
+		var tasks []*model.Task
+		for _, ep := range cand.Episodes {
+			if !selected[ep.Index] {
+				continue
+			}
+			tasks = append(tasks, newTask(ep.URL, fmt.Sprintf("%s [P%02d %s]", cleanTitle, ep.Index, sanitizeFilename(ep.Title))))
+		}
+		if len(tasks) > 0 {
+			return tasks
+		}
+	}
+
+	// 单集模式: 多分集视频在标题中附加当前分 P 序号与分集名
+	taskTitle := cleanTitle
+	if len(cand.Episodes) > 1 && cand.CurrentPage > 0 && cand.CurrentPage <= len(cand.Episodes) {
+		curEp := cand.Episodes[cand.CurrentPage-1]
+		taskTitle = fmt.Sprintf("%s [P%02d %s]", cleanTitle, curEp.Index, sanitizeFilename(curEp.Title))
+	}
+	return []*model.Task{newTask(cand.SourceURL, taskTitle)}
+}
+
 // sniffPageMedia 探测当前页面的视频与媒体元素
 func (m *Manager) sniffPageMedia(page *mygo.Page) {
 	// 等待 1 秒待动态播放器或异步脚本初始化完成
@@ -1260,169 +1351,283 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 		if cleanTitle == "" {
 			cleanTitle = "网页媒体资源"
 		}
-		escapedTitle := strings.ReplaceAll(cleanTitle, `\`, `\\`)
-		escapedTitle = strings.ReplaceAll(escapedTitle, `"`, `\"`)
-		escapedTitle = strings.ReplaceAll(escapedTitle, "'", `\'`)
-		escapedTitle = strings.ReplaceAll(escapedTitle, "\n", " ")
-		escapedURL := strings.ReplaceAll(res.URL, `\`, `\\`)
-		escapedURL = strings.ReplaceAll(escapedURL, `"`, `\"`)
-		escapedURL = strings.ReplaceAll(escapedURL, "'", `\'`)
-		escapedDirect := strings.ReplaceAll(firstDirectURL, `\`, `\\`)
-		escapedDirect = strings.ReplaceAll(escapedDirect, `"`, `\"`)
-		escapedDirect = strings.ReplaceAll(escapedDirect, "'", `\'`)
+		dataJSON, _ := json.Marshal(cardData{
+			Direct:     firstDirectURL,
+			Title:      cleanTitle,
+			URL:        res.URL,
+			MediaCount: mediaFoundCount,
+		})
 
-		toastScript := fmt.Sprintf(`(() => {
+		// 页面数据整体以 JSON 注入，避免手工转义导致的脚本语法错误或注入风险
+		toastScript := `(() => {
+	try {
+		const MG = ` + string(dataJSON) + `;
+		window.__mg_first_direct_url = MG.direct || '';
+		window.__mg_clean_title = MG.title || '';
+
+		const safeSetHTML = (el, htmlStr) => {
 			try {
-				window.__mg_first_direct_url = '%s';
-				window.__mg_clean_title = '%s';
-
-				const safeSetHTML = (el, htmlStr) => {
-					try {
-						if (window.trustedTypes) {
-							if (!window.__mg_tt_policy) {
-								try {
-									window.__mg_tt_policy = window.trustedTypes.createPolicy('mediago', { createHTML: s => s });
-								} catch (e) {
-									window.__mg_tt_policy = window.trustedTypes.defaultPolicy;
-								}
-							}
-							if (window.__mg_tt_policy) {
-								el.innerHTML = window.__mg_tt_policy.createHTML(htmlStr);
-								return;
-							}
-						}
-					} catch (e) {}
-					try {
-						el.innerHTML = htmlStr;
-					} catch (e) {
+				if (window.trustedTypes) {
+					if (!window.__mg_tt_policy) {
 						try {
-							const parser = new DOMParser();
-							const doc = parser.parseFromString(htmlStr, 'text/html');
-							while (el.firstChild) el.removeChild(el.firstChild);
-							while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
-						} catch (e2) {}
+							window.__mg_tt_policy = window.trustedTypes.createPolicy('mediago', { createHTML: s => s });
+						} catch (e) {
+							window.__mg_tt_policy = window.trustedTypes.defaultPolicy;
+						}
 					}
-				};
-
-				// 挂载资源解析结果回调
-				window.__mg_render_parsed_ui = (title, fmts, episodesCount) => {
-					let toast = document.getElementById('mg-sniff-toast-card');
-					if (!toast) return;
-					let optionsHtml = '';
-					if (fmts && fmts.length > 0) {
-						optionsHtml = fmts.map(f => `+"`"+`<option value="${f.id}">${f.res} (${f.ext})</option>`+"`"+`).join('');
-					} else {
-						optionsHtml = '<option value="">默认最优规格</option>';
+					if (window.__mg_tt_policy) {
+						el.innerHTML = window.__mg_tt_policy.createHTML(htmlStr);
+						return;
 					}
-					const epBadge = episodesCount > 1 ? `+"`"+`<span style="font-size:10px;background:rgba(0,113,227,0.15);color:#0071e3;padding:2px 6px;border-radius:4px;font-weight:600;">共 ${episodesCount} 集</span>`+"`"+` : '';
-					safeSetHTML(toast, `+"`"+`
-						<div style="display:flex;align-items:center;justify-content:space-between;">
-							<div style="display:flex;align-items:center;gap:6px;">
-								<span style="font-size:13px;">🎬</span>
-								<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">资源解析就绪</span>
-								${epBadge}
-							</div>
-							<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
-						</div>
-						<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="${title}">${title}</div>
-						<div style="display:flex;flex-direction:column;gap:5px;margin-top:2px;">
-							<label class="mg-toast-muted" style="font-size:11px;color:rgba(255,255,255,0.6);">选择清晰度规格:</label>
-							<select class="mg-format-select" id="mg-card-fmt">${optionsHtml}</select>
-						</div>
-						<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px;">
-							<button class="mg-btn-secondary" id="mg-sniff-cancel" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">取消</button>
-							<button id="mg-sniff-confirm-btn" style="height:26px;padding:0 14px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">开始下载</button>
-						</div>
-					`+"`"+`);
-					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
-					toast.querySelector('#mg-sniff-cancel').onclick = () => toast.remove();
-					toast.querySelector('#mg-sniff-confirm-btn').onclick = () => {
-						const selFmt = toast.querySelector('#mg-card-fmt').value;
-						window.location.href = 'mediago-sniff://confirm-download?fmtId=' + encodeURIComponent(selFmt);
-					};
-				};
-
-				// 挂载解析失败回调 (尺寸与正在解析文案容器一致，紧凑小巧)
-				window.__mg_render_extract_error = (errMsg) => {
-					let toast = document.getElementById('mg-sniff-toast-card');
-					if (!toast) return;
-					const directURL = window.__mg_first_direct_url || '';
-					let fallbackHtml = '';
-					if (directURL) {
-						fallbackHtml = '<button id="mg-sniff-direct-btn" style="height:22px;padding:0 8px;border-radius:5px;border:none;background:#34c759;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">直链下载</button>';
-					}
-					safeSetHTML(toast, `+"`"+`
-						<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">
-							<div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
-								<span style="font-size:13px;flex-shrink:0;">⚠️</span>
-								<span class="mg-toast-limit-text" style="font-size:12px;color:#ff453a;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${errMsg}">页面视频解析受限</span>
-							</div>
-							<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:8px;">
-								${fallbackHtml}
-								<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
-							</div>
-						</div>
-					`+"`"+`);
-					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
-					if (toast.querySelector('#mg-sniff-direct-btn')) {
-						toast.querySelector('#mg-sniff-direct-btn').onclick = () => {
-							window.location.href = 'mediago-sniff://direct-download?directUrl=' + encodeURIComponent(directURL) + '&title=' + encodeURIComponent(window.__mg_clean_title || '嗅探直链视频');
-						};
-					}
-				};
-
-				// 挂载下载提交成功反馈
-				window.__mg_render_success = () => {
-					let toast = document.getElementById('mg-sniff-toast-card');
-					if (!toast) return;
-					safeSetHTML(toast, '<div style="font-size:12px;color:#34c759;font-weight:600;padding:6px 0;text-align:center;">✓ 已加入下载队列，在主窗口查看进度</div>');
-					setTimeout(() => { if (toast) toast.remove(); }, 2200);
-				};
-
-				// 渲染初始嗅探卡片
-				let toast = document.getElementById('mg-sniff-toast-card');
-				if (!toast) {
-					toast = document.createElement('div');
-					toast.id = 'mg-sniff-toast-card';
-					document.documentElement.appendChild(toast);
 				}
-				safeSetHTML(toast, `+"`"+`
-					<div style="display:flex;align-items:center;justify-content:space-between;">
-						<div style="display:flex;align-items:center;gap:6px;">
-							<div class="mg-pulse-dot"></div>
-							<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">发现可下载媒体</span>
-						</div>
-						<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
-					</div>
-					<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">%s</div>
-					<div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;">
-						<span class="mg-toast-muted" style="font-size:10px;color:rgba(255,255,255,0.5);">检测到 %d 个媒体资源</span>
-						<div style="display:flex;align-items:center;gap:8px;">
-							<button class="mg-btn-secondary" id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>
-							<button id="mg-sniff-download-btn" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">立即下载</button>
-						</div>
-					</div>
-				`+"`"+`);
-				toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
-				toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
-				toast.querySelector('#mg-sniff-download-btn').onclick = () => {
-					// 原地切换为解析中 UI (带动态旋转菊花，精简文案)
-					safeSetHTML(toast, `+"`"+`
-						<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">
-							<div style="display:flex;align-items:center;gap:8px;">
-								<div class="mg-spinner"></div>
-								<span style="font-size:12px;color:#0071e3;font-weight:500;">正在解析视频...</span>
-							</div>
-							<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>
-						</div>
-					`+"`"+`);
-					toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
-					// 触发后台深度解析，优先传当前真实页面 href
-					const targetURL = window.location.href || '%s';
-					window.location.href = 'mediago-sniff://extract?url=' + encodeURIComponent(targetURL);
-				};
 			} catch (e) {}
-		})()`, escapedDirect, escapedTitle, escapedTitle, mediaFoundCount, escapedURL)
+			try {
+				el.innerHTML = htmlStr;
+			} catch (e) {
+				try {
+					const parser = new DOMParser();
+					const doc = parser.parseFromString(htmlStr, 'text/html');
+					while (el.firstChild) el.removeChild(el.firstChild);
+					while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+				} catch (e2) {}
+			}
+		};
+
+		const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+		const ensureToast = () => {
+			let toast = document.getElementById('mg-sniff-toast-card');
+			if (!toast) {
+				toast = document.createElement('div');
+				toast.id = 'mg-sniff-toast-card';
+				document.documentElement.appendChild(toast);
+			}
+			return toast;
+		};
+
+		// ---- 分集选择状态 (由 Go 端深度解析回调写入) ----
+		let EPS = [];
+		let CUR = 0;
+		let mgMode = 'current';
+		let mgSel = {};
+		let lastFormats = [];
+		let lastFmtValue = '';
+
+		const selCount = () => EPS.filter(e => mgSel[e.i]).length;
+
+		const curEpLabel = () => {
+			if (CUR <= 0) return '仅下载当前集';
+			const ep = EPS.find(e => e.i === CUR);
+			let t = ep && ep.t ? String(ep.t) : '';
+			if (t.length > 8) t = t.slice(0, 8) + '…';
+			return '仅下载当前集 (P' + CUR + (t ? ' ' + t : '') + ')';
+		};
+
+		const batchLabel = () => {
+			const n = selCount();
+			if (EPS.length > 0 && n === EPS.length) return '批量下载全部 ' + EPS.length + ' 集';
+			return '批量下载 (已选 ' + n + ' 集)';
+		};
+
+		const confirmLabel = () => {
+			if (EPS.length <= 1) return '开始下载';
+			if (mgMode !== 'batch') return CUR > 0 ? '立即下载当前集 (P' + CUR + ')' : '立即下载当前集';
+			const n = selCount();
+			if (n === 0) return '请先选择分集';
+			if (n === EPS.length) return '立即批量下载全部 ' + EPS.length + ' 集';
+			return '立即批量下载已选 ' + n + ' 集';
+		};
+
+		const pillStyle = (active) => active
+			? 'background:rgba(0,113,227,0.16);border:1px solid #0071e3;color:#0071e3;font-weight:600;'
+			: 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);color:rgba(255,255,255,0.75);';
+
+		const fmtOptionsHtml = () => {
+			if (lastFormats.length > 0) {
+				return lastFormats.map(f => '<option value="' + esc(f.id) + '">' + esc(f.res) + ' (' + esc(f.ext) + ')</option>').join('');
+			}
+			return '<option value="">默认最优规格</option>';
+		};
+
+		// 渲染解析结果卡片 (切换模式 / 勾选分集后原地重绘)
+		const renderParsedCard = () => {
+			const toast = ensureToast();
+			const epBadge = EPS.length > 1
+				? '<span style="font-size:10px;background:rgba(0,113,227,0.15);color:#0071e3;padding:2px 6px;border-radius:4px;font-weight:600;">共 ' + EPS.length + ' 集</span>'
+				: '';
+
+			let epHtml = '';
+			if (EPS.length > 1) {
+				epHtml = '<div style="display:flex;gap:6px;">' +
+					'<button id="mg-mode-cur" style="flex:1;height:26px;border-radius:6px;font-size:11px;cursor:pointer;' + pillStyle(mgMode !== 'batch') + '">' + esc(curEpLabel()) + '</button>' +
+					'<button id="mg-mode-batch" style="flex:1;height:26px;border-radius:6px;font-size:11px;cursor:pointer;' + pillStyle(mgMode === 'batch') + '">' + esc(batchLabel()) + '</button>' +
+				'</div>';
+				if (mgMode === 'batch') {
+					const rows = EPS.map(e => {
+						const on = !!mgSel[e.i];
+						return '<div class="mg-ep-row" data-ep="' + e.i + '" style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;' + (on ? 'background:rgba(0,113,227,0.14);' : '') + '">' +
+							'<span style="width:14px;height:14px;border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#ffffff;' + (on ? 'background:#0071e3;' : 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.25);') + '">' + (on ? '✓' : '') + '</span>' +
+							'<span style="font-size:10px;font-weight:600;color:rgba(255,255,255,0.55);flex-shrink:0;">P' + String(e.i).padStart(2, '0') + '</span>' +
+							'<span style="font-size:11px;color:' + (on ? '#0071e3' : 'rgba(255,255,255,0.85)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(e.t) + '">' + esc(e.t) + '</span>' +
+						'</div>';
+					}).join('');
+					epHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;">' +
+							'<span style="font-size:10px;color:rgba(255,255,255,0.5);">已选 ' + selCount() + '/' + EPS.length + ' 集</span>' +
+							'<span id="mg-ep-toggleall" style="font-size:10px;color:#0071e3;cursor:pointer;">' + (selCount() === EPS.length ? '取消全选' : '全选') + '</span>' +
+						'</div>' +
+						'<div class="mg-ep-list" style="max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:3px;border-radius:6px;background:rgba(255,255,255,0.04);">' + rows + '</div>';
+				}
+			}
+
+			const confirmDisabled = EPS.length > 1 && mgMode === 'batch' && selCount() === 0;
+			safeSetHTML(toast, '' +
+				'<div style="display:flex;align-items:center;justify-content:space-between;">' +
+					'<div style="display:flex;align-items:center;gap:6px;">' +
+						'<span style="font-size:13px;">🎬</span>' +
+						'<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">资源解析就绪</span>' +
+						epBadge +
+					'</div>' +
+					'<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>' +
+				'</div>' +
+				'<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="' + esc(MG.title) + '">' + esc(MG.title) + '</div>' +
+				'<div style="display:flex;flex-direction:column;gap:5px;">' +
+					'<label class="mg-toast-muted" style="font-size:11px;color:rgba(255,255,255,0.6);">选择清晰度规格:</label>' +
+					'<select class="mg-format-select" id="mg-card-fmt">' + fmtOptionsHtml() + '</select>' +
+				'</div>' +
+				epHtml +
+				'<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:2px;">' +
+					'<button class="mg-btn-secondary" id="mg-sniff-cancel" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">取消</button>' +
+					'<button id="mg-sniff-confirm-btn" style="height:26px;padding:0 14px;border-radius:6px;border:none;font-size:11px;font-weight:600;cursor:pointer;' + (confirmDisabled ? 'background:rgba(0,113,227,0.35);color:rgba(255,255,255,0.55);' : 'background:#0071e3;color:#ffffff;') + '">' + esc(confirmLabel()) + '</button>' +
+				'</div>'
+			);
+
+			const sel = toast.querySelector('#mg-card-fmt');
+			if (sel) {
+				if (lastFmtValue) {
+					for (const opt of sel.options) {
+						if (opt.value === lastFmtValue) { sel.value = lastFmtValue; break; }
+					}
+				}
+				lastFmtValue = sel.value;
+				sel.onchange = () => { lastFmtValue = sel.value; };
+			}
+			toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+			toast.querySelector('#mg-sniff-cancel').onclick = () => toast.remove();
+
+			const modeCur = toast.querySelector('#mg-mode-cur');
+			if (modeCur) modeCur.onclick = () => { mgMode = 'current'; renderParsedCard(); };
+			const modeBatch = toast.querySelector('#mg-mode-batch');
+			if (modeBatch) modeBatch.onclick = () => { mgMode = 'batch'; renderParsedCard(); };
+			const toggleAll = toast.querySelector('#mg-ep-toggleall');
+			if (toggleAll) toggleAll.onclick = () => {
+				const makeAll = selCount() !== EPS.length;
+				EPS.forEach(e => { mgSel[e.i] = makeAll; });
+				renderParsedCard();
+			};
+			toast.querySelectorAll('.mg-ep-row').forEach(row => {
+				row.onclick = () => {
+					const i = parseInt(row.getAttribute('data-ep'), 10);
+					mgSel[i] = !mgSel[i];
+					renderParsedCard();
+				};
+			});
+			toast.querySelector('#mg-sniff-confirm-btn').onclick = () => {
+				if (confirmDisabled) return;
+				let target = 'mediago-sniff://confirm-download?fmtId=' + encodeURIComponent(lastFmtValue || '');
+				if (EPS.length > 1 && mgMode === 'batch') {
+					const chosen = EPS.filter(e => mgSel[e.i]).map(e => e.i).join(',');
+					target += '&mode=batch&eps=' + encodeURIComponent(chosen);
+				}
+				window.__mg_last_confirm_url = target; // 供调试与自动化校验读取最终提交参数
+				window.location.href = target;
+			};
+		};
+
+		// 挂载解析结果回调 (Go 端深度解析完成后下发标题、规格与分集列表)
+		window.__mg_render_parsed_ui = (title, fmts, eps, curPage) => {
+			if (!document.getElementById('mg-sniff-toast-card')) return;
+			lastFormats = fmts || [];
+			lastFmtValue = '';
+			if (title) MG.title = title;
+			EPS = eps || [];
+			CUR = curPage || 0;
+			mgSel = {};
+			EPS.forEach(e => { mgSel[e.i] = true; }); // 默认全选，对齐主窗口
+			mgMode = 'current';                       // 默认仅下载当前集
+			renderParsedCard();
+		};
+
+		// 挂载解析失败回调 (尺寸与正在解析文案容器一致，紧凑小巧)
+		window.__mg_render_extract_error = (errMsg) => {
+			let toast = document.getElementById('mg-sniff-toast-card');
+			if (!toast) return;
+			const directURL = window.__mg_first_direct_url || '';
+			let fallbackHtml = '';
+			if (directURL) {
+				fallbackHtml = '<button id="mg-sniff-direct-btn" style="height:22px;padding:0 8px;border-radius:5px;border:none;background:#34c759;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">直链下载</button>';
+			}
+			safeSetHTML(toast, '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">' +
+					'<div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">' +
+						'<span style="font-size:13px;flex-shrink:0;">⚠️</span>' +
+						'<span class="mg-toast-limit-text" style="font-size:12px;color:#ff453a;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(errMsg) + '">页面视频解析受限</span>' +
+					'</div>' +
+					'<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:8px;">' +
+						fallbackHtml +
+						'<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>' +
+					'</div>' +
+				'</div>');
+			toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+			const directBtn = toast.querySelector('#mg-sniff-direct-btn');
+			if (directBtn) {
+				directBtn.onclick = () => {
+					window.location.href = 'mediago-sniff://direct-download?directUrl=' + encodeURIComponent(directURL) + '&title=' + encodeURIComponent(window.__mg_clean_title || '嗅探直链视频');
+				};
+			}
+		};
+
+		// 挂载下载提交成功反馈
+		window.__mg_render_success = () => {
+			let toast = document.getElementById('mg-sniff-toast-card');
+			if (!toast) return;
+			safeSetHTML(toast, '<div style="font-size:12px;color:#34c759;font-weight:600;padding:6px 0;text-align:center;">✓ 已加入下载队列，在主窗口查看进度</div>');
+			setTimeout(() => { if (toast) toast.remove(); }, 2200);
+		};
+
+		// 渲染初始嗅探卡片
+		const toast = ensureToast();
+		safeSetHTML(toast, '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+				'<div style="display:flex;align-items:center;gap:6px;">' +
+					'<div class="mg-pulse-dot"></div>' +
+					'<span class="mg-toast-title" style="font-size:12px;font-weight:600;color:#ffffff;">发现可下载媒体</span>' +
+				'</div>' +
+				'<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>' +
+			'</div>' +
+			'<div class="mg-toast-body" style="font-size:12px;line-height:1.4;color:rgba(255,255,255,0.85);font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">' + esc(MG.title) + '</div>' +
+			'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;">' +
+				'<span class="mg-toast-muted" style="font-size:10px;color:rgba(255,255,255,0.5);">检测到 ' + MG.mediaCount + ' 个媒体资源</span>' +
+				'<div style="display:flex;align-items:center;gap:8px;">' +
+					'<button class="mg-btn-secondary" id="mg-sniff-ignore" style="height:26px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;">忽略</button>' +
+					'<button id="mg-sniff-download-btn" style="height:26px;padding:0 12px;border-radius:6px;border:none;background:#0071e3;color:#ffffff;font-size:11px;font-weight:600;cursor:pointer;">立即下载</button>' +
+				'</div>' +
+			'</div>');
+		toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+		toast.querySelector('#mg-sniff-ignore').onclick = () => toast.remove();
+		toast.querySelector('#mg-sniff-download-btn').onclick = () => {
+			// 原地切换为解析中 UI (带动态旋转菊花，精简文案)
+			safeSetHTML(toast, '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">' +
+					'<div style="display:flex;align-items:center;gap:8px;">' +
+						'<div class="mg-spinner"></div>' +
+						'<span style="font-size:12px;color:#0071e3;font-weight:500;">正在解析视频...</span>' +
+					'</div>' +
+					'<button class="mg-close-btn" id="mg-sniff-close" title="关闭">✕</button>' +
+				'</div>');
+			toast.querySelector('#mg-sniff-close').onclick = () => toast.remove();
+			// 触发后台深度解析，优先传当前真实页面 href
+			const targetURL = window.location.href || MG.url || '';
+			window.location.href = 'mediago-sniff://extract?url=' + encodeURIComponent(targetURL);
+		};
+	} catch (e) {}
+})()`
 		_, _ = page.Eval(toastScript)
 	}
 }

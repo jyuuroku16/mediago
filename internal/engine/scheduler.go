@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -221,7 +222,49 @@ func (sc *Scheduler) Resume(id string) error {
 		return nil
 	}
 	task.ErrorMsg = ""
+	task.RetryCount = 0 // 手动"继续"视为重新开始，重置自动重试计数
 	return sc.Submit(task)
+}
+
+// 自动重试策略: 瞬时失败最多自动重试 3 次，退避间隔 5s / 15s / 45s
+const maxAutoRetries = 3
+
+// autoRetryDelay 返回第 attempt 次自动重试前的等待时长 (超出重试上限返回 0)
+func autoRetryDelay(attempt int) time.Duration {
+	switch attempt {
+	case 1:
+		return 5 * time.Second
+	case 2:
+		return 15 * time.Second
+	case 3:
+		return 45 * time.Second
+	default:
+		return 0
+	}
+}
+
+// scheduleAutoRetry 延时后自动重新入队
+// 期间若用户手动暂停/删除任务，或任务状态已被改写，则放弃本次重试
+func (sc *Scheduler) scheduleAutoRetry(id string, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-sc.stopCh:
+		return
+	case <-timer.C:
+	}
+
+	if sc.isDeleted(id) {
+		return
+	}
+	latest, err := sc.storage.GetTask(id)
+	if err != nil || latest.Status != model.StatusRetryWait {
+		return
+	}
+	if err := sc.Submit(latest); err != nil {
+		log.Printf("[scheduler] 自动重试重新入队失败 (%s): %v", id, err)
+	}
 }
 
 func (sc *Scheduler) scheduleLoop() {
@@ -309,8 +352,20 @@ func (sc *Scheduler) startTask(task *model.Task) {
 				// 用户主动取消或暂停
 				return
 			}
+			// 网络抖动、站点限流等瞬时故障自动退避重试，无需用户手动点"继续"
+			if task.RetryCount < maxAutoRetries {
+				task.RetryCount++
+				delay := autoRetryDelay(task.RetryCount)
+				task.Status = model.StatusRetryWait
+				task.ErrorMsg = fmt.Sprintf("下载中断，%d 秒后自动重试 (%d/%d): %v", int(delay.Seconds()), task.RetryCount, maxAutoRetries, err)
+				task.Speed = 0
+				task.UpdatedAt = time.Now()
+				sc.notifyUpdate(task)
+				go sc.scheduleAutoRetry(task.ID, delay)
+				return
+			}
 			task.Status = model.StatusFailed
-			task.ErrorMsg = err.Error()
+			task.ErrorMsg = fmt.Sprintf("%s (已自动重试 %d 次)", err.Error(), task.RetryCount)
 			task.Speed = 0
 			task.UpdatedAt = time.Now()
 			sc.notifyUpdate(task)
