@@ -53,13 +53,20 @@ func main() {
 	// 5. 初始化控制器与浏览器管理器
 	var appUI *ui.AppUI
 	browserMgr := browser.NewManager(func(task *model.Task) {
-		scheduler.Submit(task)
+		if config.Global().Get().AutoStart {
+			_ = scheduler.Submit(task)
+		} else {
+			_ = scheduler.SubmitIdle(task)
+		}
 		if appUI != nil {
 			appUI.RefreshUI()
 		}
 	}, s.DownloadDir)
 
 	appUI = ui.NewAppUI(store, scheduler, browserMgr, lib)
+
+	// 启动时修复上次异常退出遗留的任务状态 (自动断点续传，或转为暂停等待手动继续)
+	scheduler.ReconcileOnStartup(s.AutoStart)
 
 	// 注册配置监听器
 	cfg.OnChange(func(latest config.Settings) {
@@ -102,6 +109,8 @@ func main() {
 
 		win.OnClosed(func() {
 			scheduler.Stop()
+			// 关闭数据库连接以触发 WAL 检查点合并，避免主库长期不落盘
+			_ = store.Close()
 			os.Exit(0)
 		})
 	})

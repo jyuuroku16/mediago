@@ -243,7 +243,7 @@ func (m *Manager) Open(initialURL string) {
 					totalBytes = selectedFmt.Filesize
 				}
 
-				cleanTitle := strings.TrimSpace(cand.Title)
+				cleanTitle := sanitizeFilename(strings.TrimSpace(cand.Title))
 				if cleanTitle == "" {
 					cleanTitle = "视频资源"
 				}
@@ -286,6 +286,7 @@ func (m *Manager) Open(initialURL string) {
 					tTitle = q.Get("title")
 				}
 			}
+			tTitle = sanitizeFilename(tTitle)
 			if tTitle == "" {
 				tTitle = "嗅探直链视频"
 			}

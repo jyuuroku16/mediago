@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"mediago/internal/discovery"
 	"mediago/internal/model"
@@ -64,6 +65,9 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 	args := []string{
 		"--newline",
 		"--no-warnings",
+		"--concurrent-fragments", "4", // HLS/DASH 分片并发拉取，显著提升 X / B站等流媒体站点速度
+		"--retries", "10",
+		"--fragment-retries", "10",
 		"-f", formatSelector,
 		"--merge-output-format", "mp4",
 		"-o", outputTemplate,
@@ -175,19 +179,69 @@ func (e *ExtractorWorkerEngine) Download(ctx context.Context, task *model.Task, 
 		return fmt.Errorf("下载合并进程退出异常: %w", err)
 	}
 
-	// 查找实际生成的临时文件并重命名为最终文件
-	matches, _ := filepath.Glob(filepath.Join(task.OutputDir, task.ID+"_tmp.*"))
-	if len(matches) > 0 {
-		tmpProduced := matches[0]
+	// 查找实际生成的产物并重命名为最终文件
+	produced, pickErr := pickProducedArtifact(task.OutputDir, task.ID)
+	if pickErr != nil {
+		// 兜底: 产物可能已直接落在最终路径
+		if _, statErr := os.Stat(finalPath); statErr != nil {
+			return fmt.Errorf("未找到下载产物文件: %s", finalPath)
+		}
+	} else {
 		_ = os.Remove(finalPath) // 覆盖已有
-		if err := os.Rename(tmpProduced, finalPath); err != nil {
+		if err := os.Rename(produced, finalPath); err != nil {
 			return fmt.Errorf("重命名产物失败: %w", err)
 		}
-	} else if _, err := os.Stat(finalPath); err != nil {
-		return fmt.Errorf("未找到下载产物文件: %s", finalPath)
 	}
 
+	// 清理本次任务遗留的 .part / .ytdl 等中间文件
+	cleanupTempArtifacts(task.OutputDir, task.ID, "")
+
 	return nil
+}
+
+// pickProducedArtifact 从下载目录中挑选真正的合并产物
+// 优先精确匹配 taskID_tmp.mp4 / .m4a，其次回退到排除 .part / .ytdl 等中间文件后的最新文件
+// (修复历史缺陷: 直接取 glob 首个结果时，.part 因字典序靠前会被误当成最终产物)
+func pickProducedArtifact(dir, taskID string) (string, error) {
+	for _, ext := range []string{".mp4", ".m4a"} {
+		p := filepath.Join(dir, taskID+"_tmp"+ext)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return p, nil
+		}
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(dir, taskID+"_tmp.*"))
+	var best string
+	var bestTime time.Time
+	for _, m := range matches {
+		lower := strings.ToLower(m)
+		if strings.HasSuffix(lower, ".part") || strings.HasSuffix(lower, ".ytdl") || strings.HasSuffix(lower, ".temp") {
+			continue
+		}
+		fi, err := os.Stat(m)
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			continue
+		}
+		if best == "" || fi.ModTime().After(bestTime) {
+			best = m
+			bestTime = fi.ModTime()
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("未找到下载产物文件")
+	}
+	return best, nil
+}
+
+// cleanupTempArtifacts 清理指定任务残留的中间文件 (keep 非空时保留该路径)
+func cleanupTempArtifacts(dir, taskID, keep string) {
+	matches, _ := filepath.Glob(filepath.Join(dir, taskID+"_tmp.*"))
+	for _, m := range matches {
+		if keep != "" && m == keep {
+			continue
+		}
+		_ = os.Remove(m)
+	}
 }
 
 func parseBytesWithUnit(num float64, unit string) int64 {

@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,12 +166,60 @@ func (l *Library) QuickLook(filePath string) error {
 	return exec.Command("open", filePath).Start()
 }
 
-// MoveToTrash 将文件安全移动到 macOS 废纸篓
+// MoveToTrash 将文件移入系统废纸篓
+// 采用纯 Go 文件移动而非 Finder AppleScript: 既避免触发 macOS 自动化权限弹窗，
+// 也彻底消除文件路径拼接进脚本的注入风险
 func (l *Library) MoveToTrash(filePath string) error {
 	if _, err := os.Stat(filePath); err != nil {
 		return nil
 	}
-	// 利用 AppleScript 安全移入废纸篓
-	script := fmt.Sprintf(`tell application "Finder" to delete POSIX file "%s"`, filePath)
-	return exec.Command("osascript", "-e", script).Run()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("无法定位用户主目录: %w", err)
+	}
+	trashDir := filepath.Join(home, ".Trash")
+	if err := os.MkdirAll(trashDir, 0700); err != nil {
+		return fmt.Errorf("无法访问废纸篓目录: %w", err)
+	}
+
+	dest := filepath.Join(trashDir, filepath.Base(filePath))
+	if _, err := os.Stat(dest); err == nil {
+		// 废纸篓中已有同名文件，附加时间戳避免覆盖旧文件
+		ext := filepath.Ext(dest)
+		stem := strings.TrimSuffix(filepath.Base(dest), ext)
+		dest = filepath.Join(trashDir, fmt.Sprintf("%s %s%s", stem, time.Now().Format("2006-01-02 15.04.05"), ext))
+	}
+
+	if err := os.Rename(filePath, dest); err != nil {
+		// 跨卷场景 (下载目录位于外置磁盘等) 无法直接重命名，退化为复制后删除
+		if copyErr := copyFileToTrash(filePath, dest); copyErr != nil {
+			return fmt.Errorf("移入废纸篓失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// copyFileToTrash 跨卷场景的废纸篓回退实现: 复制到目标位置后删除源文件
+func copyFileToTrash(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dest)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dest)
+		return err
+	}
+	return os.Remove(src)
 }

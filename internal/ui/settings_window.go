@@ -600,8 +600,8 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 			envCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			envCard.Children(func() {
 				envItems := []struct{ name, ver string }{
-					{"MyGo 原生 UI 渲染框架", "v0.3.7 (Metal GPU / Direct3D)"},
-					{"Go 语言运行时", runtime.Version()},
+					{"MyGo", "v0.3.7 (Metal GPU / Direct3D)"},
+					{"Go", runtime.Version()},
 				}
 				for idx, it := range envItems {
 					row := it

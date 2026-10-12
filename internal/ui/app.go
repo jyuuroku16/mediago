@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"mediago/internal/browser"
+	"mediago/internal/config"
 	"mediago/internal/discovery"
 	"mediago/internal/engine"
 	"mediago/internal/library"
@@ -73,6 +75,12 @@ type AppUI struct {
 
 	// 工具安装提示横幅已关闭标记
 	dismissToolBanner bool
+
+	// 删除/移除二次确认弹窗状态
+	showDeleteConfirm bool
+	deleteAssetTarget *model.Asset
+	deleteTaskTarget  *model.Task
+	deleteFileToo     bool
 }
 
 // RefreshUI 触发主窗口重绘
@@ -224,6 +232,24 @@ func (app *AppUI) filteredTasks() []*model.Task {
 	return result
 }
 
+// filteredAssets 按搜索关键词过滤媒体资料库条目
+func (app *AppUI) filteredAssets() []*model.Asset {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+
+	q := strings.ToLower(strings.TrimSpace(app.searchFilter))
+	if q == "" {
+		return app.assets
+	}
+	var result []*model.Asset
+	for _, a := range app.assets {
+		if strings.Contains(strings.ToLower(a.Title), q) || strings.Contains(strings.ToLower(a.FilePath), q) {
+			result = append(result, a)
+		}
+	}
+	return result
+}
+
 // View 主渲染循环
 func (app *AppUI) View(c *ui.Context) {
 	theme := c.Theme()
@@ -280,6 +306,9 @@ func (app *AppUI) View(c *ui.Context) {
 	}
 	if app.showShortcuts {
 		app.renderShortcutsModal(c, pal)
+	}
+	if app.showDeleteConfirm {
+		app.renderDeleteConfirmModal(c, pal)
 	}
 }
 
@@ -725,9 +754,10 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 					ui.Icon(c, iconTrash).FontSize(12).TextColor(pal.Danger)
 				})
 				if delBtn.Clicked() {
-					_ = app.scheduler.Pause(t.ID)
-					_ = app.storage.DeleteTask(t.ID)
-					app.refreshData()
+					app.deleteTaskTarget = t
+					app.deleteAssetTarget = nil
+					app.showDeleteConfirm = true
+					app.RefreshUI()
 				}
 			})
 		})
@@ -736,9 +766,7 @@ func (app *AppUI) renderTaskCard(c *ui.Context, t *model.Task, pal Palette) {
 
 // renderLibraryCards 渲染本地媒体库卡片
 func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
-	app.mu.RLock()
-	assets := app.assets
-	app.mu.RUnlock()
+	assets := app.filteredAssets()
 
 	if len(assets) == 0 {
 		ui.Column(c).Grow(1).Center().Gap(10).Children(func() {
@@ -815,8 +843,11 @@ func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
 							}
 						}
 						if app.iconButton(c, iconTrash, "移除记录").Clicked() {
-							_ = app.storage.DeleteAsset(a.ID)
-							app.refreshData()
+							app.deleteAssetTarget = a
+							app.deleteTaskTarget = nil
+							app.deleteFileToo = false
+							app.showDeleteConfirm = true
+							app.RefreshUI()
 						}
 					})
 				})
@@ -1119,7 +1150,7 @@ func (app *AppUI) submitCandidate() {
 				CreatedAt:      time.Now(),
 				UpdatedAt:      time.Now(),
 			}
-			_ = app.scheduler.Submit(task)
+			app.submitTaskRespectingAutoStart(task)
 		}
 		app.refreshData()
 		return
@@ -1148,8 +1179,18 @@ func (app *AppUI) submitCandidate() {
 		UpdatedAt:      time.Now(),
 	}
 
-	_ = app.scheduler.Submit(task)
+	app.submitTaskRespectingAutoStart(task)
 	app.refreshData()
+}
+
+// submitTaskRespectingAutoStart 按"自动开始新加入的任务"设置提交任务
+// 关闭该设置时任务以暂停状态加入列表，等待用户手动点击继续
+func (app *AppUI) submitTaskRespectingAutoStart(task *model.Task) {
+	if config.Global().Get().AutoStart {
+		_ = app.scheduler.Submit(task)
+		return
+	}
+	_ = app.scheduler.SubmitIdle(task)
 }
 
 func sanitizeFilename(name string) string {
@@ -1441,4 +1482,130 @@ func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
 			})
 		})
 	})
+}
+
+// renderDeleteConfirmModal 渲染删除/移除二次确认弹窗
+func (app *AppUI) renderDeleteConfirmModal(c *ui.Context, pal Palette) {
+	ui.Modal(c, &app.showDeleteConfirm, func() {
+		ui.Column(c).Width(420).Gap(12).Children(func() {
+			asset := app.deleteAssetTarget
+			task := app.deleteTaskTarget
+
+			// 1. 标题
+			title := "移除媒体记录"
+			if asset == nil && task != nil {
+				title = "删除下载任务"
+			}
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconTrash).FontSize(14).TextColor(pal.Danger)
+				ui.Text(c, title).FontSize(14).Bold().TextColor(pal.TextPrimary)
+			})
+
+			// 2. 说明与目标信息
+			if asset != nil {
+				ui.Text(c, "将从媒体资料库中移除这条记录，此操作不可撤销。").FontSize(12).TextColor(pal.TextSecondary)
+				ui.Column(c).Fill().Padding(8, 10).Gap(3).Radius(6).Background(pal.InputBg).Children(func() {
+					ui.Text(c, asset.Title).FontSize(12).TextColor(pal.TextPrimary).SingleLine()
+					ui.Text(c, asset.FilePath).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+				})
+
+				// 同时删除磁盘文件的勾选行
+				fileRow := ui.Row(c).Height(30).Padding(0, 10).Gap(8).Radius(6).Background(pal.InputBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				fileRow.Children(func() {
+					chkBox := ui.Row(c).Size(16, 16).Radius(4).Center()
+					if app.deleteFileToo {
+						chkBox.Background(pal.Danger)
+						chkBox.Children(func() {
+							ui.Icon(c, iconCheck).FontSize(10).TextColor(ui.Hex("#ffffff"))
+						})
+					} else {
+						chkBox.Background(pal.CardBg).BorderWidth(1.2).BorderColor(pal.InputBorder)
+					}
+					ui.Text(c, "同时将视频文件移到废纸篓").FontSize(12).TextColor(pal.TextPrimary)
+				})
+				if fileRow.Clicked() {
+					app.deleteFileToo = !app.deleteFileToo
+				}
+				if !app.deleteFileToo {
+					ui.Text(c, "不勾选时，磁盘上的视频文件将保留，仅移除资料库记录。").FontSize(11).TextColor(pal.TextMuted)
+				}
+			} else if task != nil {
+				switch task.Status {
+				case model.StatusDownloading, model.StatusQueued:
+					ui.Text(c, "该任务正在下载中，删除将立即中断当前下载进度。").FontSize(12).TextColor(pal.Warning)
+				case model.StatusCompleted:
+					ui.Text(c, "该任务记录将被删除；已归档到媒体资料库的视频文件不受影响。").FontSize(12).TextColor(pal.TextSecondary)
+				default:
+					ui.Text(c, "该任务记录将被删除，已下载的临时进度会保留，重新添加后可断点续传。").FontSize(12).TextColor(pal.TextSecondary)
+				}
+				ui.Column(c).Fill().Padding(8, 10).Gap(3).Radius(6).Background(pal.InputBg).Children(func() {
+					ui.Text(c, task.Title).FontSize(12).TextColor(pal.TextPrimary).SingleLine()
+					if task.FinalPath != "" {
+						ui.Text(c, task.FinalPath).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+					}
+				})
+			}
+
+			// 3. 底部按钮 (取消 / 确认删除)
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Spacer(c)
+
+				cancelBtn := ui.Row(c).Height(28).Padding(0, 16).Radius(6).Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				cancelBtn.Children(func() {
+					ui.Text(c, "取消").FontSize(12).TextColor(pal.TextPrimary)
+				})
+				if cancelBtn.Clicked() {
+					app.closeDeleteConfirm()
+				}
+
+				confirmLabel := "移除记录"
+				if asset == nil && task != nil {
+					confirmLabel = "删除任务"
+				}
+				confirmBtn := ui.Row(c).Height(28).Padding(0, 16).Radius(6).Background(pal.Danger).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				confirmBtn.Children(func() {
+					ui.Text(c, confirmLabel).FontSize(12).Bold().TextColor(ui.Hex("#ffffff"))
+				})
+				if confirmBtn.Clicked() {
+					app.performConfirmedDelete()
+				}
+			})
+		})
+	})
+}
+
+// closeDeleteConfirm 关闭删除确认弹窗并清空待删除目标
+func (app *AppUI) closeDeleteConfirm() {
+	app.showDeleteConfirm = false
+	app.deleteAssetTarget = nil
+	app.deleteTaskTarget = nil
+	app.deleteFileToo = false
+}
+
+// performConfirmedDelete 执行用户已二次确认的删除操作
+func (app *AppUI) performConfirmedDelete() {
+	asset := app.deleteAssetTarget
+	task := app.deleteTaskTarget
+	removeFile := app.deleteFileToo
+
+	app.closeDeleteConfirm()
+
+	if asset != nil {
+		if removeFile {
+			if err := app.library.MoveToTrash(asset.FilePath); err != nil {
+				// 移入废纸篓失败时保留资料库记录，避免文件与记录双双消失造成数据丢失
+				log.Printf("[ui] 移动文件到废纸篓失败 (%s): %v", asset.FilePath, err)
+				app.refreshData()
+				return
+			}
+		}
+		_ = app.storage.DeleteAsset(asset.ID)
+		app.refreshData()
+		return
+	}
+	if task != nil {
+		// CancelTask 会同时中断运行中的引擎并登记删除墓碑，避免进度回写"复活"任务
+		_ = app.scheduler.CancelTask(task.ID)
+		app.refreshData()
+	}
 }

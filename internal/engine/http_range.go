@@ -25,12 +25,26 @@ type HTTPRangeEngine struct {
 	client *http.Client
 }
 
+// newStreamingHTTPClient 构造适用于大文件/流式分片下载的 HTTP 客户端
+// 注意: 刻意不设置 Client.Timeout 总超时 (30s 总超时会误杀一切大文件下载)，
+// 仅约束连接握手与响应头等待时间；传输阶段的停滞由分段下载看门狗负责
+func newStreamingHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{Transport: transport}
+}
+
 // NewHTTPRangeEngine 创建 HTTP 下载引擎
 func NewHTTPRangeEngine() *HTTPRangeEngine {
 	return &HTTPRangeEngine{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		client: newStreamingHTTPClient(),
 	}
 }
 
@@ -138,11 +152,18 @@ func (e *HTTPRangeEngine) Download(ctx context.Context, task *model.Task, opts D
 	if numChunks <= 0 {
 		numChunks = 4
 	}
+	// 大文件自动提升并发分段数，充分利用高带宽链路
+	if canRange && probe.ContentLength > 256*1024*1024 && numChunks < 8 {
+		numChunks = 8
+	}
 	if !canRange {
 		numChunks = 1
 	}
 
 	// 3. 打开或创建 .partial 临时文件
+	partialInfo, partialStatErr := os.Stat(partialPath)
+	partialExists := partialStatErr == nil
+
 	file, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("打开临时文件失败: %w", err)
@@ -151,6 +172,30 @@ func (e *HTTPRangeEngine) Download(ctx context.Context, task *model.Task, opts D
 
 	if task.TotalBytes > 0 {
 		_ = file.Truncate(task.TotalBytes)
+	}
+
+	// 3.1 断点续传安全校验，避免稀疏写入在产物中留下空洞:
+	//   - 服务端不支持 Range: 无法续传，必须从头开始，否则数据错位
+	//   - .partial 临时文件不存在: 上次数据已丢失，历史分段进度作废
+	//   - 分段进度超出实际文件长度: 回退该分段，防止写入空洞
+	if !canRange {
+		for i := range task.Chunks {
+			task.Chunks[i].Downloaded = 0
+			task.Chunks[i].Done = false
+		}
+	} else if !partialExists {
+		for i := range task.Chunks {
+			task.Chunks[i].Downloaded = 0
+			task.Chunks[i].Done = false
+		}
+	} else {
+		for i := range task.Chunks {
+			c := &task.Chunks[i]
+			if c.StartByte+c.Downloaded > partialInfo.Size() {
+				c.Downloaded = 0
+				c.Done = false
+			}
+		}
 	}
 
 	// 4. 初始化或复用 Chunks
@@ -262,6 +307,7 @@ func (e *HTTPRangeEngine) Download(ctx context.Context, task *model.Task, opts D
 	return nil
 }
 
+// downloadChunk 下载单个分段，内置断点重试 (最多 3 次) 与网络停滞看门狗
 func (e *HTTPRangeEngine) downloadChunk(
 	ctx context.Context,
 	rawURL string,
@@ -270,7 +316,42 @@ func (e *HTTPRangeEngine) downloadChunk(
 	useRange bool,
 	downloadedTotal *int64,
 ) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		lastErr = e.downloadChunkOnce(ctx, rawURL, file, chunk, useRange, downloadedTotal)
+		if lastErr == nil {
+			return nil
+		}
+		// 用户主动取消/暂停时不再重试
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 800 * time.Millisecond):
+		}
+	}
+	return lastErr
+}
+
+func (e *HTTPRangeEngine) downloadChunkOnce(
+	ctx context.Context,
+	rawURL string,
+	file *os.File,
+	chunk *model.Chunk,
+	useRange bool,
+	downloadedTotal *int64,
+) error {
+	// 独立子 context: 网络停滞时看门狗只中断本次分段请求，不影响整体任务
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
@@ -287,9 +368,35 @@ func (e *HTTPRangeEngine) downloadChunk(
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("服务端返回异常状态码: %d", resp.StatusCode)
+	}
 	if useRange && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("服务端返回非预期状态码: %d", resp.StatusCode)
 	}
+	if useRange && resp.StatusCode == http.StatusOK && curStart > 0 {
+		return fmt.Errorf("服务端忽略了 Range 请求，无法断点续传分段 %d", chunk.Index+1)
+	}
+
+	// 网络停滞看门狗: 连续 30 秒无任何数据到达则中断本次请求，交由外层重试
+	var lastActivity int64 = time.Now().UnixNano()
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, atomic.LoadInt64(&lastActivity))) > 30*time.Second {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 
 	buf := make([]byte, 32*1024)
 	offset := curStart
@@ -303,6 +410,7 @@ func (e *HTTPRangeEngine) downloadChunk(
 
 		n, rErr := resp.Body.Read(buf)
 		if n > 0 {
+			atomic.StoreInt64(&lastActivity, time.Now().UnixNano())
 			_, wErr := file.WriteAt(buf[:n], offset)
 			if wErr != nil {
 				return wErr
@@ -315,6 +423,10 @@ func (e *HTTPRangeEngine) downloadChunk(
 		if rErr != nil {
 			if rErr == io.EOF {
 				break
+			}
+			// 看门狗触发的取消: 转换为可读的错误信息
+			if reqCtx.Err() != nil && ctx.Err() == nil {
+				return fmt.Errorf("网络停滞超过 30 秒，分段 %d 下载中断", chunk.Index+1)
 			}
 			return rErr
 		}

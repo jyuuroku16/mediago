@@ -28,7 +28,7 @@ type HLSEngine struct {
 // NewHLSEngine 创建 HLS 引擎，自动查找 ffmpeg 路径
 func NewHLSEngine() *HLSEngine {
 	return &HLSEngine{
-		client:     &http.Client{Timeout: 30 * time.Second},
+		client:     newStreamingHTTPClient(),
 		ffmpegPath: discovery.FindFFmpeg(),
 	}
 }
@@ -59,10 +59,10 @@ func (h *HLSEngine) Download(ctx context.Context, task *model.Task, opts Downloa
 	}
 
 	totalSegments := int64(len(segments))
-	task.TotalBytes = totalSegments * 64 * 1024 // 估算字节数
-	var downloadedCount int64
+	task.TotalBytes = totalSegments * 64 * 1024 // 初始估算字节数，随实际下载动态修正
+	var downloadedBytes int64
 
-	// 2. 并发下载分片
+	// 2. 并发下载分片 (每个分片内置重试)
 	maxConcurrent := 4
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
@@ -86,7 +86,7 @@ func (h *HLSEngine) Download(ctx context.Context, task *model.Task, opts Downloa
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			if err := h.downloadFile(ctx, targetURL, outPath); err != nil {
+			if err := h.downloadFileWithRetry(ctx, targetURL, outPath); err != nil {
 				select {
 				case errCh <- err:
 				default:
@@ -94,10 +94,18 @@ func (h *HLSEngine) Download(ctx context.Context, task *model.Task, opts Downloa
 				return
 			}
 
-			done := atomic.AddInt64(&downloadedCount, 1)
-			atomic.StoreInt64(&task.DownloadedBytes, done*64*1024)
+			written := int64(0)
+			if fi, err := os.Stat(outPath); err == nil {
+				written = fi.Size()
+			}
+			nowBytes := atomic.AddInt64(&downloadedBytes, written)
+			// 实际字节数超过初始估算时动态抬高总量，避免进度长期失真
+			if est := atomic.LoadInt64(&task.TotalBytes); nowBytes > est {
+				atomic.StoreInt64(&task.TotalBytes, nowBytes)
+			}
+			atomic.StoreInt64(&task.DownloadedBytes, nowBytes)
 			if opts.OnProgress != nil {
-				opts.OnProgress(done, totalSegments, 0)
+				opts.OnProgress(nowBytes, atomic.LoadInt64(&task.TotalBytes), 0)
 			}
 		}(i, segURL, segFilePath)
 	}
@@ -133,7 +141,7 @@ func (h *HLSEngine) Download(ctx context.Context, task *model.Task, opts Downloa
 	if h.ffmpegPath == "" {
 		return fmt.Errorf("系统未找到可用的 FFmpeg 工具，无法合并分片。请在偏好设置中一键下载安装")
 	}
-	cmd := exec.CommandContext(ctx, h.ffmpegPath, "-y", "-f", "concat", "-safe", "0", "-i", concatListFile, "-c", "copy", finalPath)
+	cmd := exec.CommandContext(ctx, h.ffmpegPath, "-y", "-f", "concat", "-safe", "0", "-i", concatListFile, "-c", "copy", "-movflags", "+faststart", finalPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg 合并失败 (%v): %s", err, string(output))
@@ -203,6 +211,27 @@ func (h *HLSEngine) fetchLines(ctx context.Context, u string) ([]string, error) 
 		lines = append(lines, strings.TrimSpace(scanner.Text()))
 	}
 	return lines, scanner.Err()
+}
+
+// downloadFileWithRetry 下载单个分片，失败时自动重试最多 3 次
+func (h *HLSEngine) downloadFileWithRetry(ctx context.Context, u, destPath string) error {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		lastErr = h.downloadFile(ctx, u, destPath)
+		if lastErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 800 * time.Millisecond):
+		}
+	}
+	return lastErr
 }
 
 func (h *HLSEngine) downloadFile(ctx context.Context, u, destPath string) error {
