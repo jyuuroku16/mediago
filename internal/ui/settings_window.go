@@ -298,6 +298,17 @@ func (sw *SettingsWindow) renderGeneralTab(c *ui.Context, theme *ui.Theme, pal P
 
 			groupCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			groupCard.Children(func() {
+				ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center).Children(func() {
+					ui.Column(c).Gap(2).Grow(1).Children(func() {
+						ui.Text(c, "显示菜单栏下载入口").FontSize(13).TextColor(pal.TextPrimary)
+						ui.Text(c, "快速解析下载；关闭主窗口后继续在菜单栏运行").FontSize(11).TextColor(pal.TextSecondary)
+					})
+					enabled := s.MenuBarEnabled
+					if ui.Switch(c, &enabled).Label("菜单栏入口开关").Changed() {
+						cfg.Update(func(st *config.Settings) { st.MenuBarEnabled = enabled })
+					}
+				})
+				ui.Box(c).Height(1).Fill().Background(sepColor)
 				// 行 1: 通知开关
 				r1 := ui.Row(c).Fill().Padding(10, 16).AlignItems(ui.Center)
 				r1.Children(func() {
@@ -600,7 +611,7 @@ func (sw *SettingsWindow) renderAboutTab(c *ui.Context, theme *ui.Theme, pal Pal
 			envCard := ui.Column(c).Fill().Radius(10).Background(cardBg)
 			envCard.Children(func() {
 				envItems := []struct{ name, ver string }{
-					{"MyGo", "v0.3.7 (Metal GPU / Direct3D)"},
+					{"MyGo", "v0.4.8 (Metal GPU / Direct3D)"},
 					{"Go", runtime.Version()},
 				}
 				for idx, it := range envItems {

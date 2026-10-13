@@ -17,6 +17,7 @@ type Settings struct {
 	DownloadDir      string `json:"downloadDir"`      // 下载保存目录
 	MaxConcurrent    int    `json:"maxConcurrent"`    // 最大活动下载任务数 (1~8)
 	Theme            string `json:"theme"`            // system, light, dark
+	MenuBarEnabled   bool   `json:"menuBarEnabled"`   // 菜单栏快捷下载入口
 	Notifications    bool   `json:"notifications"`    // 下载完成桌面通知
 	AutoStart        bool   `json:"autoStart"`        // 自动开始新加入的任务
 	InjectedOmnibox  bool   `json:"injectedOmnibox"`  // 专用浏览器启用 Chrome 风格顶部地址栏
@@ -33,6 +34,7 @@ func defaultSettings() Settings {
 		DownloadDir:      defaultDir,
 		MaxConcurrent:    3,
 		Theme:            "system",
+		MenuBarEnabled:   true,
 		Notifications:    true,
 		AutoStart:        true,
 		InjectedOmnibox:  true,

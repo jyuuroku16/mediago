@@ -28,12 +28,16 @@ const titleBarHeight = 52
 
 // AppUI 现代化桌面主界面控制器 (对标 godiff / gorex 与 Apple HIG)
 type AppUI struct {
-	window     *mygo.Window
-	storage    *storage.Storage
-	scheduler  *engine.Scheduler
-	browserMgr *browser.Manager
-	library    *library.Library
-	extractor  *discovery.YtDlpExtractor
+	window            *mygo.Window
+	menuBar           *MenuBar
+	extractGeneration uint64
+	parsedURL         string
+	downloadNotice    string
+	storage           *storage.Storage
+	scheduler         *engine.Scheduler
+	browserMgr        *browser.Manager
+	library           *library.Library
+	extractor         *discovery.YtDlpExtractor
 
 	mu sync.RWMutex
 
@@ -85,13 +89,23 @@ type AppUI struct {
 
 // RefreshUI 触发主窗口重绘
 func (app *AppUI) RefreshUI() {
-	if app.window != nil {
-		app.window.Invalidate()
+	if app.window == nil {
+		return
 	}
+	mygo.RunOnMain(func() {
+		if app.menuBar != nil && app.menuBar.panel != nil {
+			app.menuBar.panel.SetSize(460, app.menuBarHeight())
+			app.menuBar.panel.Invalidate()
+		}
+		app.window.Invalidate()
+	})
 }
 
 // OpenSettings 打开独立的 macOS 原生偏好设置窗口
 func (app *AppUI) OpenSettings(initialTab ...string) {
+	if app.menuBar != nil {
+		app.menuBar.closePanel()
+	}
 	if app.settingsWin != nil {
 		app.settingsWin.Open(initialTab...)
 	}
@@ -99,6 +113,7 @@ func (app *AppUI) OpenSettings(initialTab ...string) {
 
 // OpenBrowserLauncher 打开 Raycast 风格网址输入启动器
 func (app *AppUI) OpenBrowserLauncher() {
+	app.ShowMainWindow()
 	app.showBrowserLauncher = true
 	app.launcherInput = ""
 	app.RefreshUI()
@@ -112,11 +127,9 @@ func (app *AppUI) OpenShortcutsHelp() {
 
 // OpenNewDownload 打开新建下载弹窗
 func (app *AppUI) OpenNewDownload() {
+	app.ShowMainWindow()
+	app.resetDownload()
 	app.showModal = true
-	app.modalURL = ""
-	app.candidate = nil
-	app.extractError = ""
-	app.downloadAllEpisodes = false
 	app.RefreshUI()
 }
 
@@ -166,9 +179,7 @@ func NewAppUI(
 	// 调度器状态变动时触发 UI 重新绘制
 	sc.OnUpdate(func(t *model.Task) {
 		app.refreshData()
-		if app.window != nil {
-			app.window.Invalidate()
-		}
+		app.RefreshUI()
 	})
 
 	// 监听核心流媒体工具安装进度，触发主视窗重绘
@@ -419,9 +430,7 @@ func (app *AppUI) renderSidebarItem(c *ui.Context, id, title string, icon *ui.SV
 
 	if btn.Clicked() {
 		app.currentTab = id
-		if app.window != nil {
-			app.window.Invalidate()
-		}
+		app.RefreshUI()
 	}
 }
 
@@ -578,9 +587,7 @@ func (app *AppUI) renderMainContent(c *ui.Context, pal Palette) {
 				ui.Text(c, "立即粘贴链接下载").FontSize(12).TextColor(pal.TextPrimary)
 			})
 			if createBtn.Clicked() {
-				app.showModal = true
-				app.modalURL = ""
-				app.candidate = nil
+				app.OpenNewDownload()
 			}
 		})
 		return
@@ -869,10 +876,25 @@ func (app *AppUI) renderLibraryCards(c *ui.Context, pal Palette) {
 // renderModalDialog 渲染极简悬浮模态框 (基于 mygo ui.Modal 单层原生容器，无多余双层嵌套底座)
 func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 	ui.Modal(c, &app.showModal, func() {
-		ui.Column(c).Width(520).Gap(14).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "新建媒体下载").FontSize(15).Bold().TextColor(pal.TextPrimary)
-				ui.Spacer(c)
+		app.renderDownloadForm(c, pal, 520, false)
+	})
+}
+
+// renderDownloadForm is shared by the main dialog and the menu bar flyout.
+func (app *AppUI) renderDownloadForm(c *ui.Context, pal Palette, width float32, compact bool) {
+	columns := 3
+	if compact {
+		columns = 2
+	}
+	ui.Column(c).Width(width).Gap(14).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "新建媒体下载").FontSize(15).Bold().TextColor(pal.TextPrimary)
+			ui.Spacer(c)
+			if compact {
+				if app.iconButton(c, iconSettings, "设置").Clicked() {
+					app.OpenSettings()
+				}
+			} else {
 				closeBtn := ui.ButtonBase(c).Size(20, 20).Radius(10).Center().Background(pal.InputBg)
 				closeBtn.Children(func() {
 					ui.Icon(c, iconClose).FontSize(11).TextColor(pal.TextSecondary)
@@ -880,274 +902,317 @@ func (app *AppUI) renderModalDialog(c *ui.Context, pal Palette) {
 				if closeBtn.Clicked() {
 					app.showModal = false
 				}
-			})
+			}
+		})
 
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				// 输入框容器 (充满剩余宽度)
-				ui.Row(c).Height(38).Padding(0, 12).Gap(8).Radius(8).
-					Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).
-					AlignItems(ui.Center).Grow(1).Children(func() {
-					ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.TextMuted)
-					in := ui.TextInputBase(c, &app.modalURL).AutoFocus().Placeholder("粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)").FontSize(13).Grow(1).MinWidth(0)
-					if in.Submitted() || in.Shortcut(0, ui.KeyEnter) {
-						if app.candidate != nil && len(app.candidate.Formats) > 0 {
-							app.submitCandidate()
-							app.showModal = false
-						} else if strings.TrimSpace(app.modalURL) != "" {
-							app.startExtract()
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			// 输入框容器 (充满剩余宽度)
+			ui.Row(c).Height(38).Padding(0, 12).Gap(8).Radius(8).
+				Background(pal.InputBg).BorderWidth(1).BorderColor(pal.InputBorder).
+				AlignItems(ui.Center).Grow(1).Children(func() {
+				ui.Icon(c, iconGlobe).FontSize(14).TextColor(pal.TextMuted)
+				placeholder := "粘贴视频网址或直链地址 (MP4, HLS, B站, YouTube 等)"
+				if compact {
+					placeholder = "粘贴视频网址或媒体直链…"
+				}
+				in := ui.TextInputBase(c, &app.modalURL).AutoFocus().Label("媒体地址").Placeholder(placeholder).FontSize(13).Grow(1).MinWidth(0)
+				if in.Changed() {
+					app.invalidateCandidate()
+				}
+				if in.Submitted() || in.Shortcut(0, ui.KeyEnter) {
+					if app.canSubmitCandidate() {
+						if app.submitCandidate() {
+							app.finishDownloadForm(compact)
 						}
-					}
-				})
-
-				// 移出到输入框右侧的主按钮 (无内容或解析中置灰，有内容高亮 Accent 蓝)
-				hasURL := strings.TrimSpace(app.modalURL) != ""
-				canParse := hasURL && !app.isExtracting
-
-				parseBtn := ui.Row(c).Height(38).Padding(0, 18).Radius(8).AlignItems(ui.Center)
-				if canParse {
-					parseBtn.Background(pal.Accent).Cursor(ui.CursorPointer)
-					parseBtn.Children(func() {
-						ui.Text(c, "解析").FontSize(13).Bold().TextColor(ui.Hex("#ffffff"))
-					})
-					if parseBtn.Clicked() {
+					} else if strings.TrimSpace(app.modalURL) != "" {
 						app.startExtract()
 					}
-				} else {
-					parseBtn.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).Cursor(ui.CursorDefault)
-					parseBtn.Children(func() {
-						ui.Text(c, "解析").FontSize(13).TextColor(pal.TextMuted)
-					})
 				}
 			})
 
-			if app.isExtracting {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Spinner(c).FontSize(14).TextColor(pal.Accent)
-					ui.Text(c, "正在解析视频...").FontSize(12).TextColor(pal.Accent)
+			// 移出到输入框右侧的主按钮 (无内容或解析中置灰，有内容高亮 Accent 蓝)
+			hasURL := strings.TrimSpace(app.modalURL) != ""
+			canParse := hasURL && !app.isExtracting
+
+			parseBtn := ui.Row(c).Height(38).Padding(0, 18).Radius(8).AlignItems(ui.Center)
+			if canParse {
+				parseBtn.Background(pal.Accent).Cursor(ui.CursorPointer)
+				parseBtn.Children(func() {
+					ui.Text(c, "解析").FontSize(13).Bold().TextColor(ui.Hex("#ffffff"))
 				})
-			}
-
-			if app.extractError != "" {
-				ui.Text(c, "解析失败: "+app.extractError).FontSize(12).TextColor(pal.Danger)
-			}
-
-			if app.candidate != nil {
-				ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(10).Children(func() {
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconFilm).FontSize(14).TextColor(pal.Accent)
-						ui.Text(c, app.candidate.Title).FontSize(13).Bold().TextColor(pal.TextPrimary).SingleLine().Grow(1).MinWidth(0)
-					})
-
-					// 多集选集区块 (B站等多分集视频)
-					if len(app.candidate.Episodes) > 1 {
-						ui.Column(c).Padding(10, 12).Radius(8).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Gap(8).Children(func() {
-							ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-								ui.Icon(c, iconList).FontSize(13).TextColor(pal.Accent)
-								ui.Text(c, fmt.Sprintf("检测到多集视频 (共 %d 集)", len(app.candidate.Episodes))).FontSize(12).Bold().TextColor(pal.TextPrimary).SingleLine()
-								if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
-									curEp := app.candidate.Episodes[app.candidate.CurrentPage-1]
-									ui.Spacer(c)
-									epTitle := curEp.Title
-									if len([]rune(epTitle)) > 12 {
-										epTitle = string([]rune(epTitle)[:10]) + "..."
-									}
-									ui.Text(c, fmt.Sprintf("当前位于: P%d %s", curEp.Index, epTitle)).FontSize(11).TextColor(pal.Accent).SingleLine()
-								}
-							})
-
-							curPTitle := fmt.Sprintf("P%d", app.candidate.CurrentPage)
-							if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
-								epObj := app.candidate.Episodes[app.candidate.CurrentPage-1]
-								epTitle := epObj.Title
-								if len([]rune(epTitle)) > 10 {
-									epTitle = string([]rune(epTitle)[:8]) + "..."
-								}
-								curPTitle = fmt.Sprintf("P%02d %s", epObj.Index, epTitle)
-							}
-							curLabel := "仅下载: " + curPTitle
-
-							selectedCount := 0
-							for _, ep := range app.candidate.Episodes {
-								if app.selectedEpisodesMap[ep.Index] {
-									selectedCount++
-								}
-							}
-							batchLabel := fmt.Sprintf("批量下载 (已选 %d 集)", selectedCount)
-							if selectedCount == len(app.candidate.Episodes) {
-								batchLabel = fmt.Sprintf("批量下载全部 %d 集", len(app.candidate.Episodes))
-							}
-
-							ui.Row(c).Gap(8).Children(func() {
-								btnCur := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center)
-								if !app.downloadAllEpisodes {
-									btnCur.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
-									btnCur.Children(func() {
-										ui.Text(c, curLabel).FontSize(11).Bold().TextColor(pal.Accent).SingleLine()
-									})
-								} else {
-									btnCur.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
-									btnCur.Children(func() {
-										ui.Text(c, curLabel).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
-									})
-								}
-								if btnCur.Clicked() {
-									app.downloadAllEpisodes = false
-								}
-
-								btnAll := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center).Gap(5)
-								if app.downloadAllEpisodes {
-									btnAll.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
-									btnAll.Children(func() {
-										ui.Text(c, batchLabel).FontSize(11).Bold().TextColor(pal.Accent).SingleLine()
-										ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.Accent)
-									})
-								} else {
-									btnAll.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
-									btnAll.Children(func() {
-										ui.Text(c, batchLabel).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
-										ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.TextMuted)
-									})
-								}
-								if btnAll.Clicked() {
-									app.showEpisodesModal = true
-								}
-							})
-						})
-					}
-
-					if len(app.candidate.Formats) > 0 {
-						ui.Text(c, "选择清晰度与保存格式:").FontSize(11).Bold().TextColor(pal.TextSecondary)
-						ui.Column(c).Gap(6).Children(func() {
-							for i := 0; i < len(app.candidate.Formats); i += 3 {
-								end := i + 3
-								if end > len(app.candidate.Formats) {
-									end = len(app.candidate.Formats)
-								}
-								rowSlice := app.candidate.Formats[i:end]
-								startIdx := i
-								ui.Row(c).Gap(8).Children(func() {
-									for j, f := range rowSlice {
-                                        idx := startIdx + j
-										isSel := app.selectedFormat == idx
-										fBg := pal.CardBg
-										fBorder := pal.CardBorder
-										fTc := pal.TextPrimary
-										if isSel {
-											fBg = pal.AccentLight
-											fBorder = pal.Accent
-											fTc = pal.Accent
-										}
-										fmtBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(7).Background(fBg).BorderWidth(1).BorderColor(fBorder).AlignItems(ui.Center)
-										fmtLabel := fmt.Sprintf("%s (%s)", f.Resolution, strings.ToUpper(f.Ext))
-										fmtBtn.Children(func() {
-											ui.Text(c, fmtLabel).FontSize(11).Bold().TextColor(fTc)
-										})
-										if fmtBtn.Clicked() {
-											app.selectedFormat = idx
-										}
-									}
-								})
-							}
-						})
-					}
-				})
-			}
-
-			// 底部操作区 (彻底移除多余的取消按钮，右对齐立即开始下载)
-			if app.candidate != nil {
-				// 主按钮文案严格跟随实际选择状态，避免"仅选 3 集却显示全部 41 集"
-				selectedCount := 0
-				for _, ep := range app.candidate.Episodes {
-					if app.selectedEpisodesMap[ep.Index] {
-						selectedCount++
-					}
+				if parseBtn.Clicked() {
+					app.startExtract()
 				}
-
-				btnText := "立即开始下载"
-				btnDisabled := false
-				if len(app.candidate.Episodes) > 1 {
-					if app.downloadAllEpisodes {
-						switch {
-						case selectedCount == 0:
-							btnText = "请先选择分集"
-							btnDisabled = true
-						case selectedCount == len(app.candidate.Episodes):
-							btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
-						default:
-							btnText = fmt.Sprintf("立即批量下载已选 %d 集", selectedCount)
-						}
-					} else {
-						btnText = fmt.Sprintf("立即下载当前集 (P%d)", app.candidate.CurrentPage)
-					}
-				}
-
-				ui.Row(c).Justify(ui.End).Children(func() {
-					confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).AlignItems(ui.Center)
-					if btnDisabled {
-						confirmBtn.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
-					} else {
-						confirmBtn.Background(pal.Accent)
-					}
-					confirmBtn.Children(func() {
-						btnColor := ui.Hex("#ffffff")
-						if btnDisabled {
-							btnColor = pal.TextMuted
-						}
-						ui.Text(c, btnText).FontSize(12).Bold().TextColor(btnColor).SingleLine()
-					})
-					if confirmBtn.Clicked() && !btnDisabled {
-						app.submitCandidate()
-						app.showModal = false
-					}
+			} else {
+				parseBtn.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder).Cursor(ui.CursorDefault)
+				parseBtn.Children(func() {
+					ui.Text(c, "解析").FontSize(13).TextColor(pal.TextMuted)
 				})
 			}
 		})
+
+		if app.isExtracting {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Spinner(c).FontSize(14).TextColor(pal.Accent)
+				ui.Text(c, "正在解析视频...").FontSize(12).TextColor(pal.Accent)
+			})
+		}
+
+		if app.extractError != "" {
+			ui.Text(c, app.extractError).FontSize(12).TextColor(pal.Danger)
+		}
+
+		if app.candidate != nil {
+			ui.Column(c).Padding(12).Radius(8).Background(pal.InputBg).Gap(10).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconFilm).FontSize(14).TextColor(pal.Accent)
+					ui.Text(c, app.candidate.Title).FontSize(13).Bold().TextColor(pal.TextPrimary).SingleLine().Grow(1).MinWidth(0)
+				})
+
+				// 多集选集区块 (B站等多分集视频)
+				if len(app.candidate.Episodes) > 1 {
+					ui.Column(c).Padding(10, 12).Radius(8).Background(pal.CardBg).BorderWidth(1).BorderColor(pal.CardBorder).Gap(8).Children(func() {
+						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+							ui.Icon(c, iconList).FontSize(13).TextColor(pal.Accent)
+							ui.Text(c, fmt.Sprintf("检测到多集视频 (共 %d 集)", len(app.candidate.Episodes))).FontSize(12).Bold().TextColor(pal.TextPrimary).SingleLine()
+							if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
+								curEp := app.candidate.Episodes[app.candidate.CurrentPage-1]
+								ui.Spacer(c)
+								epTitle := curEp.Title
+								if len([]rune(epTitle)) > 12 {
+									epTitle = string([]rune(epTitle)[:10]) + "..."
+								}
+								ui.Text(c, fmt.Sprintf("当前位于: P%d %s", curEp.Index, epTitle)).FontSize(11).TextColor(pal.Accent).SingleLine()
+							}
+						})
+
+						curPTitle := fmt.Sprintf("P%d", app.candidate.CurrentPage)
+						if app.candidate.CurrentPage > 0 && app.candidate.CurrentPage <= len(app.candidate.Episodes) {
+							epObj := app.candidate.Episodes[app.candidate.CurrentPage-1]
+							epTitle := epObj.Title
+							if len([]rune(epTitle)) > 10 {
+								epTitle = string([]rune(epTitle)[:8]) + "..."
+							}
+							curPTitle = fmt.Sprintf("P%02d %s", epObj.Index, epTitle)
+						}
+						curLabel := "仅下载: " + curPTitle
+
+						selectedCount := 0
+						for _, ep := range app.candidate.Episodes {
+							if app.selectedEpisodesMap[ep.Index] {
+								selectedCount++
+							}
+						}
+						batchLabel := fmt.Sprintf("批量下载 (已选 %d 集)", selectedCount)
+						if selectedCount == len(app.candidate.Episodes) {
+							batchLabel = fmt.Sprintf("批量下载全部 %d 集", len(app.candidate.Episodes))
+						}
+
+						ui.Row(c).Gap(8).Children(func() {
+							btnCur := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center)
+							if !app.downloadAllEpisodes {
+								btnCur.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
+								btnCur.Children(func() {
+									ui.Text(c, curLabel).FontSize(11).Bold().TextColor(pal.Accent).SingleLine()
+								})
+							} else {
+								btnCur.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
+								btnCur.Children(func() {
+									ui.Text(c, curLabel).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
+								})
+							}
+							if btnCur.Clicked() {
+								app.downloadAllEpisodes = false
+							}
+
+							btnAll := ui.Row(c).Height(28).Padding(0, 12).Radius(6).AlignItems(ui.Center).Gap(5)
+							if app.downloadAllEpisodes {
+								btnAll.Background(pal.AccentLight).BorderWidth(1).BorderColor(pal.Accent)
+								btnAll.Children(func() {
+									ui.Text(c, batchLabel).FontSize(11).Bold().TextColor(pal.Accent).SingleLine()
+									ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.Accent)
+								})
+							} else {
+								btnAll.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
+								btnAll.Children(func() {
+									ui.Text(c, batchLabel).FontSize(11).TextColor(pal.TextSecondary).SingleLine()
+									ui.Icon(c, iconChevronDown).FontSize(11).TextColor(pal.TextMuted)
+								})
+							}
+							if btnAll.Clicked() {
+								app.showEpisodesModal = true
+								app.RefreshUI()
+							}
+						})
+					})
+				}
+
+				if len(app.candidate.Formats) > 0 {
+					ui.Text(c, "选择清晰度与保存格式:").FontSize(11).Bold().TextColor(pal.TextSecondary)
+					ui.Column(c).Gap(6).Children(func() {
+						for i := 0; i < len(app.candidate.Formats); i += columns {
+							end := i + columns
+							if end > len(app.candidate.Formats) {
+								end = len(app.candidate.Formats)
+							}
+							rowSlice := app.candidate.Formats[i:end]
+							startIdx := i
+							ui.Row(c).Gap(8).Children(func() {
+								for j, f := range rowSlice {
+									idx := startIdx + j
+									isSel := app.selectedFormat == idx
+									fBg := pal.CardBg
+									fBorder := pal.CardBorder
+									fTc := pal.TextPrimary
+									if isSel {
+										fBg = pal.AccentLight
+										fBorder = pal.Accent
+										fTc = pal.Accent
+									}
+									fmtBtn := ui.Row(c).Height(28).Padding(0, 12).Radius(7).Background(fBg).BorderWidth(1).BorderColor(fBorder).AlignItems(ui.Center)
+									fmtLabel := fmt.Sprintf("%s (%s)", f.Resolution, strings.ToUpper(f.Ext))
+									fmtBtn.Children(func() {
+										ui.Text(c, fmtLabel).FontSize(11).Bold().TextColor(fTc)
+									})
+									if fmtBtn.Clicked() {
+										app.selectedFormat = idx
+									}
+								}
+							})
+						}
+					})
+				}
+			})
+		}
+
+		// 底部操作区 (彻底移除多余的取消按钮，右对齐立即开始下载)
+		if app.candidate != nil {
+			// 主按钮文案严格跟随实际选择状态，避免"仅选 3 集却显示全部 41 集"
+			selectedCount := 0
+			for _, ep := range app.candidate.Episodes {
+				if app.selectedEpisodesMap[ep.Index] {
+					selectedCount++
+				}
+			}
+
+			btnText := "立即开始下载"
+			btnDisabled := !app.canSubmitCandidate()
+			if len(app.candidate.Episodes) > 1 {
+				if app.downloadAllEpisodes {
+					switch {
+					case selectedCount == 0:
+						btnText = "请先选择分集"
+						btnDisabled = true
+					case selectedCount == len(app.candidate.Episodes):
+						btnText = fmt.Sprintf("立即批量下载全部 %d 集", len(app.candidate.Episodes))
+					default:
+						btnText = fmt.Sprintf("立即批量下载已选 %d 集", selectedCount)
+					}
+				} else {
+					btnText = fmt.Sprintf("立即下载当前集 (P%d)", app.candidate.CurrentPage)
+				}
+			}
+
+			ui.Row(c).Justify(ui.End).Children(func() {
+				confirmBtn := ui.Row(c).Height(32).Padding(0, 16).Radius(7).AlignItems(ui.Center)
+				if btnDisabled {
+					confirmBtn.Background(pal.InputBg).BorderWidth(1).BorderColor(pal.CardBorder)
+				} else {
+					confirmBtn.Background(pal.Accent)
+				}
+				confirmBtn.Children(func() {
+					btnColor := ui.Hex("#ffffff")
+					if btnDisabled {
+						btnColor = pal.TextMuted
+					}
+					ui.Text(c, btnText).FontSize(12).Bold().TextColor(btnColor).SingleLine()
+				})
+				if confirmBtn.Clicked() && !btnDisabled {
+					if app.submitCandidate() {
+						app.finishDownloadForm(compact)
+					}
+				}
+			})
+		}
 	})
+}
+
+func (app *AppUI) invalidateCandidate() {
+	app.extractGeneration++
+	app.isExtracting = false
+	app.candidate = nil
+	app.parsedURL = ""
+	app.extractError = ""
+	app.downloadNotice = ""
+	app.showEpisodesModal = false
+}
+
+func (app *AppUI) resetDownload() {
+	app.invalidateCandidate()
+	app.modalURL = ""
+	app.downloadAllEpisodes = false
+	app.selectedEpisodesMap = make(map[int]bool)
+}
+
+func (app *AppUI) canSubmitCandidate() bool {
+	if app.isExtracting || app.candidate == nil || app.parsedURL != strings.TrimSpace(app.modalURL) || app.selectedFormat < 0 || app.selectedFormat >= len(app.candidate.Formats) {
+		return false
+	}
+	if app.downloadAllEpisodes && len(app.candidate.Episodes) > 1 {
+		for _, ep := range app.candidate.Episodes {
+			if app.selectedEpisodesMap[ep.Index] {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func (app *AppUI) startExtract() {
 	u := strings.TrimSpace(app.modalURL)
-	if u == "" {
+	if u == "" || app.isExtracting {
 		return
 	}
+	app.invalidateCandidate()
+	generation := app.extractGeneration
 	app.isExtracting = true
-	app.extractError = ""
-	app.candidate = nil
-	if app.window != nil {
-		app.window.Invalidate()
-	}
-
+	app.RefreshUI()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-
 		cand, err := app.extractor.Extract(ctx, u)
-		app.mu.Lock()
-		app.isExtracting = false
-		if err != nil {
-			app.extractError = err.Error()
-		} else {
-			app.candidate = cand
-			app.selectedFormat = 0
-			app.downloadAllEpisodes = false
-			app.selectedEpisodesMap = make(map[int]bool)
-			if cand != nil {
-				for _, ep := range cand.Episodes {
-					app.selectedEpisodesMap[ep.Index] = true
-				}
-			}
-		}
-		app.mu.Unlock()
-
-		if app.window != nil {
-			app.window.Invalidate()
-		}
+		mygo.RunOnMain(func() {
+			app.completeExtract(generation, u, cand, err)
+		})
 	}()
 }
 
-func (app *AppUI) submitCandidate() {
-	if app.candidate == nil || len(app.candidate.Formats) == 0 {
+func (app *AppUI) completeExtract(generation uint64, u string, cand *model.Candidate, err error) {
+	if generation != app.extractGeneration || u != strings.TrimSpace(app.modalURL) {
 		return
+	}
+	app.isExtracting = false
+	if err != nil {
+		app.extractError = "解析失败: " + err.Error()
+	} else {
+		app.candidate = cand
+		app.parsedURL = u
+		app.selectedFormat = 0
+		app.downloadAllEpisodes = false
+		app.selectedEpisodesMap = make(map[int]bool)
+		if cand != nil {
+			for _, ep := range cand.Episodes {
+				app.selectedEpisodesMap[ep.Index] = true
+			}
+		}
+	}
+	app.RefreshUI()
+}
+
+func (app *AppUI) submitCandidate() bool {
+	if !app.canSubmitCandidate() {
+		return false
 	}
 
 	fmtObj := app.candidate.Formats[app.selectedFormat]
@@ -1187,10 +1252,14 @@ func (app *AppUI) submitCandidate() {
 				CreatedAt:      time.Now(),
 				UpdatedAt:      time.Now(),
 			}
-			app.submitTaskRespectingAutoStart(task)
+			if err := app.submitTaskRespectingAutoStart(task); err != nil {
+				app.extractError = "添加下载任务失败: " + err.Error()
+				return false
+			}
+			app.selectedEpisodesMap[ep.Index] = false
 		}
 		app.refreshData()
-		return
+		return true
 	}
 
 	// 模式 B: 单集下载（若属于多集中的某一集，在标题中附加分 P 序号）
@@ -1216,18 +1285,21 @@ func (app *AppUI) submitCandidate() {
 		UpdatedAt:      time.Now(),
 	}
 
-	app.submitTaskRespectingAutoStart(task)
+	if err := app.submitTaskRespectingAutoStart(task); err != nil {
+		app.extractError = "添加下载任务失败: " + err.Error()
+		return false
+	}
 	app.refreshData()
+	return true
 }
 
 // submitTaskRespectingAutoStart 按"自动开始新加入的任务"设置提交任务
 // 关闭该设置时任务以暂停状态加入列表，等待用户手动点击继续
-func (app *AppUI) submitTaskRespectingAutoStart(task *model.Task) {
+func (app *AppUI) submitTaskRespectingAutoStart(task *model.Task) error {
 	if config.Global().Get().AutoStart {
-		_ = app.scheduler.Submit(task)
-		return
+		return app.scheduler.Submit(task)
 	}
-	_ = app.scheduler.SubmitIdle(task)
+	return app.scheduler.SubmitIdle(task)
 }
 
 func sanitizeFilename(name string) string {
@@ -1263,20 +1335,21 @@ func formatSpeed(bytesPerSec int64) string {
 
 // HandleSniffedCandidate 当外部浏览器嗅探到媒体时被触发
 func (app *AppUI) HandleSniffedCandidate(cand *model.Candidate) {
-	app.mu.Lock()
-	app.candidate = cand
-	app.modalURL = cand.SourceURL
-	app.showModal = true
-	app.selectedFormat = 0
-	app.mu.Unlock()
-
-	if len(cand.Formats) == 0 {
-		app.startExtract()
-	} else if app.window != nil {
-		app.window.Invalidate()
+	if cand == nil {
+		return
 	}
+	mygo.RunOnMain(func() {
+		app.ShowMainWindow()
+		app.resetDownload()
+		app.modalURL = cand.SourceURL
+		app.showModal = true
+		if len(cand.Formats) == 0 {
+			app.startExtract()
+		} else {
+			app.completeExtract(app.extractGeneration, strings.TrimSpace(app.modalURL), cand, nil)
+		}
+	})
 }
-
 
 // renderBrowserLauncherModal 渲染极简 Raycast 风格的网址输入与直达启动器 (单层原生模态设计，无双层底座)
 func (app *AppUI) renderBrowserLauncherModal(c *ui.Context, pal Palette) {
@@ -1360,12 +1433,6 @@ func (app *AppUI) launchBrowserFromInput() {
 	app.browserMgr.Open(raw)
 }
 
-
-
-
-
-
-
 // renderShortcutsModal 渲染键盘快捷键速查面板 (对标 godiff/palette.go shortcutsHelp)
 func (app *AppUI) renderShortcutsModal(c *ui.Context, pal Palette) {
 	groups := []struct {
@@ -1418,12 +1485,16 @@ func (app *AppUI) renderShortcutsModal(c *ui.Context, pal Palette) {
 }
 
 // renderEpisodesModal 渲染分集多选二级模态弹窗
-func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
+func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette, compact ...bool) {
 	if app.candidate == nil || len(app.candidate.Episodes) == 0 {
 		return
 	}
 	ui.Modal(c, &app.showEpisodesModal, func() {
-		ui.Column(c).Width(480).Gap(12).Children(func() {
+		width := float32(480)
+		if len(compact) > 0 && compact[0] {
+			width = 380
+		}
+		ui.Column(c).Width(width).Gap(12).Children(func() {
 			// 1. 顶部标题与全选切换
 			selectedCount := 0
 			for _, ep := range app.candidate.Episodes {
@@ -1506,6 +1577,7 @@ func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
 				})
 				if cancelBtn.Clicked() {
 					app.showEpisodesModal = false
+					app.RefreshUI()
 				}
 
 				confirmBtn := ui.Row(c).Height(28).Padding(0, 16).Radius(6).Background(pal.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer)
@@ -1515,6 +1587,7 @@ func (app *AppUI) renderEpisodesModal(c *ui.Context, pal Palette) {
 				if confirmBtn.Clicked() {
 					app.downloadAllEpisodes = true
 					app.showEpisodesModal = false
+					app.RefreshUI()
 				}
 			})
 		})

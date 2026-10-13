@@ -86,18 +86,18 @@ func (m *Manager) Open(initialURL string) {
 
 	// 参考 gorex: TitleBarHiddenInset 无原生标题栏, TitleBarHeight: 44, VibrancySidebar 模糊底衬
 	win := mygo.NewWindow(mygo.WindowOptions{
-		Title:         "MediaGo 专用浏览器",
-		URL:           initialURL,
-		Width:         1180,
-		Height:        760,
-		MinWidth:      840,
-		MinHeight:     520,
+		Title:                "MediaGo 专用浏览器",
+		URL:                  initialURL,
+		Width:                1180,
+		Height:               760,
+		MinWidth:             840,
+		MinHeight:            520,
 		TitleBarStyle:        mygo.TitleBarHiddenInset,
 		TitleBarHeight:       44,
 		Vibrancy:             mygo.VibrancySidebar,
 		BackgroundColor:      "light-dark(#f6f6f8, #1c1c20)",
 		TrafficLightPosition: &mygo.Point{X: 16, Y: 14},
-		StateKey:      "mediago_browser_window",
+		StateKey:             "mediago_browser_window",
 		Page: mygo.PageOptions{
 			DevTools:  mygo.DevToolsAuto,
 			UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1440,7 +1440,7 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 
 		const pillStyle = (active) => active
 			? 'background:rgba(0,113,227,0.16);border:1px solid #0071e3;color:#0071e3;font-weight:600;'
-			: 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);color:rgba(255,255,255,0.75);';
+			: 'background:var(--mg-toast-btn-sec-bg);border:1px solid var(--mg-toast-border);color:var(--mg-toast-btn-sec-color);';
 
 		const fmtOptionsHtml = () => {
 			if (lastFormats.length > 0) {
@@ -1466,16 +1466,16 @@ func (m *Manager) sniffPageMedia(page *mygo.Page) {
 					const rows = EPS.map(e => {
 						const on = !!mgSel[e.i];
 						return '<div class="mg-ep-row" data-ep="' + e.i + '" style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;' + (on ? 'background:rgba(0,113,227,0.14);' : '') + '">' +
-							'<span style="width:14px;height:14px;border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#ffffff;' + (on ? 'background:#0071e3;' : 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.25);') + '">' + (on ? '✓' : '') + '</span>' +
-							'<span style="font-size:10px;font-weight:600;color:rgba(255,255,255,0.55);flex-shrink:0;">P' + String(e.i).padStart(2, '0') + '</span>' +
-							'<span style="font-size:11px;color:' + (on ? '#0071e3' : 'rgba(255,255,255,0.85)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(e.t) + '">' + esc(e.t) + '</span>' +
+							'<span style="width:14px;height:14px;border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#ffffff;' + (on ? 'background:#0071e3;' : 'background:var(--mg-toast-btn-sec-bg);border:1px solid var(--mg-toast-border);') + '">' + (on ? '✓' : '') + '</span>' +
+							'<span style="font-size:10px;font-weight:600;color:var(--mg-toast-muted);flex-shrink:0;">P' + String(e.i).padStart(2, '0') + '</span>' +
+							'<span style="font-size:11px;color:' + (on ? '#0071e3' : 'var(--mg-toast-body)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(e.t) + '">' + esc(e.t) + '</span>' +
 						'</div>';
 					}).join('');
 					epHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;">' +
-							'<span style="font-size:10px;color:rgba(255,255,255,0.5);">已选 ' + selCount() + '/' + EPS.length + ' 集</span>' +
+							'<span style="font-size:10px;color:var(--mg-toast-muted);">已选 ' + selCount() + '/' + EPS.length + ' 集</span>' +
 							'<span id="mg-ep-toggleall" style="font-size:10px;color:#0071e3;cursor:pointer;">' + (selCount() === EPS.length ? '取消全选' : '全选') + '</span>' +
 						'</div>' +
-						'<div class="mg-ep-list" style="max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:3px;border-radius:6px;background:rgba(255,255,255,0.04);">' + rows + '</div>';
+						'<div class="mg-ep-list" style="max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:3px;border-radius:6px;background:var(--mg-toast-btn-sec-bg);">' + rows + '</div>';
 				}
 			}
 

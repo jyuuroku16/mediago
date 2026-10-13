@@ -3,7 +3,7 @@ module mediago
 go 1.27.1
 
 require (
-	github.com/egoist/mygo v0.3.7
+	github.com/egoist/mygo v0.4.8
 	github.com/google/uuid v1.6.0
 	modernc.org/sqlite v1.60.1
 )
@@ -21,3 +21,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+replace github.com/egoist/mygo => ./third_party/mygo

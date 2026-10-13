@@ -55,3 +55,18 @@ func TestStripJSONC(t *testing.T) {
 	cleaned := stripJSONC(jsonc)
 	t.Logf("Cleaned JSON: %s", string(cleaned))
 }
+
+func TestMenuBarSettingMigrationAndPersistence(t *testing.T) {
+	path := t.TempDir() + "/settings.jsonc"
+	if err := os.WriteFile(path, []byte(`{"settings":{"theme":"dark"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{path: path, onChange: make(map[int]func(Settings))}
+	if !cfg.load() || !cfg.Get().MenuBarEnabled {
+		t.Fatal("older configuration must enable the new entry by default")
+	}
+	cfg.Update(func(s *Settings) { s.MenuBarEnabled = false })
+	if !cfg.load() || cfg.Get().MenuBarEnabled {
+		t.Fatal("disabled menu bar entry was not persisted")
+	}
+}

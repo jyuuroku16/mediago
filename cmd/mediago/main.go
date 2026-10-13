@@ -80,6 +80,18 @@ func main() {
 		}
 	})
 
+	quitting := false
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
+	mygo.App.OnWindowAllClosed(func() {
+		if !cfg.Get().MenuBarEnabled {
+			mygo.App.Quit()
+		}
+	})
+	mygo.App.OnActivate(func(visible bool) {
+		if !visible && appUI != nil {
+			appUI.ShowMainWindow()
+		}
+	})
 	mygo.App.WhenReady(func() {
 		// 注册 macOS 原生系统顶部菜单栏 (包含 Settings ⌘,)
 		mygo.App.SetMenu(buildAppMenu(appUI, browserMgr))
@@ -98,6 +110,7 @@ func main() {
 		})
 
 		appUI.SetWindow(win)
+		appUI.SetupMenuBar()
 
 		if os.Getenv("SHOW_SETTINGS_DEFAULT") == "1" {
 			appUI.OpenSettings("about")
@@ -107,12 +120,18 @@ func main() {
 			browserMgr.Open("https://www.bilibili.com")
 		}
 
-		win.OnClosed(func() {
-			scheduler.Stop()
-			// 关闭数据库连接以触发 WAL 检查点合并，避免主库长期不落盘
-			_ = store.Close()
-			os.Exit(0)
+		win.OnClose(func(e *mygo.CloseEvent) {
+			if !quitting && cfg.Get().MenuBarEnabled {
+				e.PreventDefault()
+				win.Hide()
+			}
 		})
+		win.OnClosed(func() {
+			if !quitting {
+				mygo.App.Quit()
+			}
+		})
+
 	})
 
 	// 6. 运行 MyGo 事件循环
